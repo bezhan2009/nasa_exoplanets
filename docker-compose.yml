@@ -1,0 +1,23 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: exoplanet-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    restart: always
+
+  frontend:
+    build:
+      context: ./exoplanets
+    container_name: exoplanet-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: always
+
