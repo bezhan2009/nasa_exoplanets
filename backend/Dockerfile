@@ -1,20 +1,21 @@
-# === Базовый образ ===
-FROM python:3.11-alpine
+FROM python:3.11-slim
 
-# === Устанавливаем зависимости для компиляции и работы pandas/numpy ===
-RUN apk add --no-cache gcc g++ musl-dev libffi-dev
-
-# === Рабочая директория ===
 WORKDIR /app
 
-# === Копируем файлы проекта ===
+# Копируем зависимости отдельно для кэширования
+COPY requirements.txt .
+
+# Устанавливаем системные зависимости для pandas
+RUN apt-get update && apt-get install -y \
+    gcc g++ && \
+    rm -rf /var/lib/apt/lists/*
+
+# Устанавливаем Python-зависимости
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Копируем код
 COPY . .
 
-# === Устанавливаем зависимости ===
-RUN pip install --no-cache-dir fastapi uvicorn joblib pandas scikit-learn
-
-# === Открываем порт ===
 EXPOSE 8000
 
-# === Запуск приложения ===
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
