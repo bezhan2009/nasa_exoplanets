@@ -1,6 +1,6 @@
 /* FULL CODE WITH API INTEGRATION */
 const MAX_PLANETS = 20;
-const API_URL = 'http://localhost:8000/predict';
+const API_URL = 'http://212.67.9.175:8000/predict';
 
 let scene, camera, renderer, composer, controls;
 let star, starLight, directionalLight;
