@@ -1,9 +1,19 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import joblib
 import pandas as pd
 
 app = FastAPI(title="Exoplanet Classifier API")
+
+# === Разрешаем CORS для всех источников ===
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],        # Разрешаем ВСЕ домены
+    allow_credentials=True,
+    allow_methods=["*"],        # Разрешаем любые методы (GET, POST и т.д.)
+    allow_headers=["*"],        # Разрешаем любые заголовки
+)
 
 # === Загружаем модель ===
 model = joblib.load("exoplanet_model.pkl")
@@ -29,14 +39,13 @@ def predict(features: ExoplanetFeatures):
     prediction = model.predict(df)[0]
     probabilities = model.predict_proba(df)[0]
 
-    # Явно преобразуем numpy -> python
     return {
-        "prediction": str(prediction),  # часто строка
+        "prediction": str(prediction),
         "probabilities": {
             "CONFIRMED": float(probabilities[0]),
             "CANDIDATE": float(probabilities[1]),
             "FALSE_POSITIVE": float(probabilities[2]),
-        }
+        },
     }
 
 @app.get("/")

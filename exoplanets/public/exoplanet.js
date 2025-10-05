@@ -1,5 +1,7 @@
-
+/* FULL CODE WITH API INTEGRATION */
 const MAX_PLANETS = 20;
+const API_URL = 'http://localhost:8000/predict';
+
 let scene, camera, renderer, composer, controls;
 let star, starLight, directionalLight;
 let planetsData = [];
@@ -16,11 +18,9 @@ const materialMap = { earth: 0, gas: 1, lava: 2 };
 let focusedObject = null;
 let cameraInitialPos = new THREE.Vector3();
 let cameraInitialTarget = new THREE.Vector3();
+let mlPredictionData = null;
 
-/* ============================================================
-   GLSL SHADERS - STAR WITH PLANET SHADOW MASKS
-   ============================================================ */
-
+// GLSL Shaders (same as before)
 const starVertexShader = `
   varying vec2 vUv;
   varying vec3 vNormal;
@@ -38,7 +38,6 @@ const starVertexShader = `
 
 const starFragmentShader = `
   #define MAX_PLANETS 20
-
   uniform float time;
   uniform vec3 color1;
   uniform vec3 color2;
@@ -48,7 +47,6 @@ const starFragmentShader = `
   uniform int planetCount;
   uniform vec3 starPosition;
   uniform float starRadius;
-
   varying vec2 vUv;
   varying vec3 vNormal;
   varying vec3 vPosition;
@@ -122,41 +120,29 @@ const starFragmentShader = `
     base = mix(base, color3, pow(pattern, 1.45));
     float pulse = 0.9 + 0.28 * sin(time*1.1 + pattern*3.14);
     base *= pulse * 1.35;
-
     vec3 viewDir = normalize(vWorldPosition - cameraPosition);
     float fresnel = pow(1.0 - abs(dot(vNormal, viewDir)), 3.0);
     base += mix(color2, color3, fresnel) * fresnel * 1.5;
-
     float radial = length(vUv - 0.5) * 2.0;
     base *= (1.0 - radial*0.36);
-
     float flare = pow(max(0.0, snoise(vPosition*2.0 + time*2.0)), 6.0);
     base += vec3(1.0,0.92,0.7) * flare * 2.4;
-
-    // PLANET SHADOW MASK
     float shadowMask = 1.0;
     for(int i=0; i<MAX_PLANETS; i++){
       if(i >= planetCount) break;
       vec3 planetPos = planetPositions[i];
       float planetR = planetRadii[i];
-      
-      // Project planet onto star surface (from camera viewpoint)
       vec3 toStar = vWorldPosition - starPosition;
       vec3 toPlanet = planetPos - starPosition;
-      
-      // Check if planet is between camera and this point on star
       float dist = length(cross(toStar, toPlanet)) / length(toStar);
       float depth = dot(normalize(toStar), normalize(toPlanet));
-      
       if(depth > 0.92 && dist < planetR * 1.2){
         float maskStrength = smoothstep(planetR * 1.2, planetR * 0.8, dist);
         shadowMask *= (1.0 - maskStrength * 0.85);
       }
     }
-
     base *= shadowMask;
     base = clamp(base, 0.0, 2.8);
-
     gl_FragColor = vec4(base, 1.0);
   }
 `;
@@ -184,7 +170,6 @@ const planetFragmentShader = `
   varying vec3 vNormal;
   varying vec3 vPosition;
   varying vec3 vWorldPosition;
-
   float hash(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453123); }
   float noise(vec2 p){
     vec2 i = floor(p); vec2 f = fract(p);
@@ -200,7 +185,6 @@ const planetFragmentShader = `
     for(int i=0;i<5;i++){ v += a * noise(p); p *= 2.0; a *= 0.5; }
     return v;
   }
-
   void main(){
     float continents = fbm(vUv*8.0 + time*0.02);
     float clouds = fbm(vUv*12.0 + time*0.06);
@@ -235,29 +219,22 @@ const planetFragmentShader = `
   }
 `;
 
-/* ============================================================
-   INIT
-   ============================================================ */
 function init() {
   scene = new THREE.Scene();
   scene.fog = new THREE.FogExp2(0x000000, 0.0012);
-
   camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 4000);
   camera.position.set(0, 14, 40);
   cameraInitialPos.copy(camera.position);
   cameraInitialTarget.set(0, 0, 0);
-
   renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setSize(innerWidth, innerHeight);
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   document.getElementById('canvas-container').appendChild(renderer.domElement);
-
   sharedPreviewRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   sharedPreviewRenderer.setSize(110, 64);
   sharedPreviewRenderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-
   composer = new THREE.EffectComposer(renderer);
   const renderPass = new THREE.RenderPass(scene, camera);
   composer.addPass(renderPass);
@@ -266,20 +243,16 @@ function init() {
   bloomPass.strength = 1.5;
   bloomPass.radius = 0.9;
   composer.addPass(bloomPass);
-
   controls = new THREE.OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.06;
   controls.minDistance = 6;
-  controls.maxDistance = 300;
+  controls.maxDistance = Infinity;
   controls.enablePan = false;
-
   raycaster = new THREE.Raycaster();
-
   starLight = new THREE.PointLight(0xfff8d2, 2.2, 1000, 2);
   starLight.position.set(0,0,0);
   scene.add(starLight);
-
   directionalLight = new THREE.DirectionalLight(0xffffff, 0.16);
   directionalLight.castShadow = true;
   directionalLight.shadow.camera.left = -80;
@@ -289,33 +262,24 @@ function init() {
   directionalLight.shadow.mapSize.width = 2048;
   directionalLight.shadow.mapSize.height = 2048;
   scene.add(directionalLight);
-
   createStar();
   createBackdrop();
   createInitialPlanets();
   createStarfield();
-
   bindUI();
   setupChartCanvas();
   initPanelParticles();
   loadSavedSystemsList();
-
   window.addEventListener('resize', onWindowResize);
   renderer.domElement.addEventListener('mousemove', onMouseMove);
   renderer.domElement.addEventListener('click', onClick);
-
   animate();
 }
 
-/* ============================================================
-   CREATE STAR
-   ============================================================ */
 function createStar() {
   const geom = new THREE.SphereBufferGeometry(3.0, 256, 256);
-  
   const planetPositions = new Array(MAX_PLANETS).fill(0).map(() => new THREE.Vector3(0, 0, 0));
   const planetRadii = new Array(MAX_PLANETS).fill(0);
-  
   const mat = new THREE.ShaderMaterial({
     vertexShader: starVertexShader,
     fragmentShader: starFragmentShader,
@@ -336,7 +300,6 @@ function createStar() {
   star.receiveShadow = true;
   star.userData = { type: 'star', name: 'Central Star', size: 3.0 };
   scene.add(star);
-
   const corona = new THREE.Mesh(
     new THREE.SphereBufferGeometry(3.6, 64, 64),
     new THREE.MeshBasicMaterial({ color: 0xffc290, transparent: true, opacity: 0.14, blending: THREE.AdditiveBlending })
@@ -368,9 +331,6 @@ function createStarfield() {
   scene.add(points);
 }
 
-/* ============================================================
-   CREATE PLANETS
-   ============================================================ */
 function createInitialPlanets() {
   const initial = [
     { name:'Kepler-A', size:0.9, distance:8, speed:0.016, color:0x4fc3f7, glow:0.22, materialType:'earth' },
@@ -397,7 +357,6 @@ function createPlanet(name, size, distance, speed, color, glowIntensity, materia
   mesh.position.set(Math.cos(initialAngle)*distance, 0, Math.sin(initialAngle)*distance);
   mesh.userData = { type: 'planet', name, size, distance, speed, color, glowIntensity, materialType };
   scene.add(mesh);
-
   const points = [];
   for (let i=0;i<=360;i++){
     const a = (i/360) * Math.PI * 2;
@@ -408,13 +367,11 @@ function createPlanet(name, size, distance, speed, color, glowIntensity, materia
   const orbitLine = new THREE.Line(orbitGeo, orbitMat);
   orbitLine.renderOrder = -1;
   scene.add(orbitLine);
-
   const id = 'planet_' + Date.now() + '_' + Math.floor(Math.random()*10000);
   planetsData.push({
     id, name, size, distance, speed, color, glowIntensity, materialType,
     angle: initialAngle, mesh, orbitLine
   });
-
   updateSystemListUI();
   updateStarUniforms();
   return id;
@@ -422,10 +379,8 @@ function createPlanet(name, size, distance, speed, color, glowIntensity, materia
 
 function updateStarUniforms() {
   if (!star || !star.material || !star.material.uniforms) return;
-  
   const positions = [];
   const radii = [];
-  
   for (let i = 0; i < MAX_PLANETS; i++) {
     if (i < planetsData.length) {
       positions.push(planetsData[i].mesh.position.clone());
@@ -435,15 +390,11 @@ function updateStarUniforms() {
       radii.push(0);
     }
   }
-  
   star.material.uniforms.planetPositions.value = positions;
   star.material.uniforms.planetRadii.value = radii;
   star.material.uniforms.planetCount.value = planetsData.length;
 }
 
-/* ============================================================
-   TRANSIT DETECTION
-   ============================================================ */
 function detectTransit() {
   const camDir = new THREE.Vector3().subVectors(camera.position, star.position).normalize();
   let best = null;
@@ -470,14 +421,10 @@ function computeBrightness(candidate) {
   return 1 - dip;
 }
 
-/* ============================================================
-   CHART
-   ============================================================ */
 let chartCanvas, chartCtx;
 function setupChartCanvas() {
   chartCanvas = document.getElementById('curve-canvas');
   chartCtx = chartCanvas.getContext('2d');
-
   function resize() {
     const rect = document.getElementById('light-curve').getBoundingClientRect();
     chartCanvas.width = Math.floor(Math.min(420, rect.width * 0.68) * devicePixelRatio);
@@ -485,7 +432,6 @@ function setupChartCanvas() {
   }
   window.addEventListener('resize', resize);
   resize();
-
   brightnessHistory = Array.from({length: 80}, ()=>1.0);
   drawChart();
 }
@@ -494,23 +440,19 @@ function drawChart() {
   if (!chartCtx) return;
   const w = chartCanvas.width, h = chartCanvas.height;
   chartCtx.clearRect(0,0,w,h);
-
   const grd = chartCtx.createLinearGradient(0,0,0,h);
   grd.addColorStop(0, 'rgba(10,12,18,0.0)');
   grd.addColorStop(1, 'rgba(10,12,18,0.0)');
   chartCtx.fillStyle = grd;
   chartCtx.fillRect(0,0,w,h);
-
   const padding = 12 * devicePixelRatio;
   const plotW = w - padding*2;
   const plotH = h - padding*2;
   const len = brightnessHistory.length;
-
   const maxVal = Math.max(...brightnessHistory);
   const minVal = Math.min(...brightnessHistory);
   const targetMax = Math.max(1.02, maxVal + 0.002);
   const targetMin = Math.min(0.7, minVal - 0.002);
-
   chartCtx.beginPath();
   for (let i=0;i<len;i++){
     const t = i/(len-1);
@@ -527,7 +469,6 @@ function drawChart() {
   g.addColorStop(1, 'rgba(79,195,247,0.02)');
   chartCtx.fillStyle = g;
   chartCtx.fill();
-
   chartCtx.beginPath();
   for (let i=0;i<len;i++){
     const t = i/(len-1);
@@ -539,7 +480,6 @@ function drawChart() {
   chartCtx.strokeStyle = 'rgba(140,235,255,0.98)';
   chartCtx.lineWidth = 2*devicePixelRatio;
   chartCtx.stroke();
-
   const lastIdx = len-1;
   const t = lastIdx/(len-1);
   const x = padding + t*plotW;
@@ -549,7 +489,6 @@ function drawChart() {
   chartCtx.fillStyle = 'rgba(255,255,255,0.95)';
   chartCtx.arc(x, y, 3*devicePixelRatio, 0, Math.PI*2);
   chartCtx.fill();
-
   chartCtx.font = `${10*devicePixelRatio}px Inter, Arial`;
   chartCtx.fillStyle = 'rgba(200,255,255,0.85)';
   chartCtx.textAlign = 'left';
@@ -557,16 +496,13 @@ function drawChart() {
   chartCtx.fillText(targetMin.toFixed(3), padding, padding + plotH + 12*devicePixelRatio);
 }
 
-/* ============================================================
-   PANEL PARTICLES
-   ============================================================ */
+/* PANEL PARTICLES */
 let panelParticlesCanvas, panelParticlesCtx, panelParticles = [];
 let panelOpen = false;
 function initPanelParticles() {
   panelParticlesCanvas = document.getElementById('panel-particles');
   if (!panelParticlesCanvas) return;
   panelParticlesCtx = panelParticlesCanvas.getContext('2d');
-
   function resize(){
     const parent = panelParticlesCanvas.parentElement;
     panelParticlesCanvas.width = Math.max(360, parent.clientWidth) * devicePixelRatio;
@@ -576,7 +512,6 @@ function initPanelParticles() {
   }
   resize();
   window.addEventListener('resize', resize);
-
   const count = 220;
   panelParticles = [];
   for (let i=0;i<count;i++){
@@ -591,7 +526,6 @@ function initPanelParticles() {
       a: 0.06 + Math.random()*0.6
     });
   }
-
   requestAnimationFrame(drawPanelParticles);
 }
 
@@ -634,7 +568,6 @@ function drawPanelParticles() {
   const ctx = panelParticlesCtx;
   const w = panelParticlesCanvas.width, h = panelParticlesCanvas.height;
   ctx.clearRect(0,0,w,h);
-
   for (const p of panelParticles) {
     p.vx += (p.tx - p.x) * 0.0016 + (Math.random()-0.5)*0.02;
     p.vy += (p.ty - p.y) * 0.0016 + (Math.random()-0.5)*0.02;
@@ -642,39 +575,31 @@ function drawPanelParticles() {
     p.vy += panelMouseY * 0.01;
     p.vx *= 0.92; p.vy *= 0.92;
     p.x += p.vx; p.y += p.vy;
-
     if (p.x < -20) p.x = w + 20;
     if (p.x > w + 20) p.x = -20;
     if (p.y < -20) p.y = h + 20;
     if (p.y > h + 20) p.y = -20;
-
     ctx.beginPath();
     ctx.fillStyle = `rgba(79,195,247,${p.a})`;
     ctx.arc(p.x, p.y, p.s*devicePixelRatio, 0, Math.PI*2);
     ctx.fill();
   }
-
   requestAnimationFrame(drawPanelParticles);
 }
 
-/* ============================================================
-   UI BINDING
-   ============================================================ */
+/* UI BINDING */
 function bindUI() {
   const panel = document.getElementById('control-panel');
   const toggleBtn = document.getElementById('toggle-panel-btn');
   const chev = document.getElementById('chev');
-
   toggleBtn.addEventListener('click', ()=>{
     const open = !panel.classList.contains('open');
     if (open) openPanel(); else closePanel();
   });
-
   function openPanel(){
     panel.classList.add('open');
     panel.setAttribute('aria-hidden','false');
     panelOpen = true;
-    assemblePanelParticles();
     assemblePanelParticles();
     panel.addEventListener('mousemove', onPanelMouseMove);
     chev.style.transform = 'rotate(180deg)';
@@ -687,37 +612,37 @@ function bindUI() {
     panel.removeEventListener('mousemove', onPanelMouseMove);
     chev.style.transform = 'rotate(0deg)';
   }
-
   setTimeout(()=> openPanel(), 420);
-
   document.getElementById('save-system-btn').addEventListener('click', saveCurrentSystem);
   document.getElementById('open-systems-btn').addEventListener('click', openSystemsModal);
   document.getElementById('clear-systems-btn').addEventListener('click', clearSavedSystems);
-
   const glowRange = document.getElementById('new-planet-glow');
   glowRange.addEventListener('input', ()=> document.getElementById('new-glow-value').textContent = glowRange.value);
   document.getElementById('add-planet-btn').addEventListener('click', (e)=> { e.preventDefault(); addPlanetFromForm(); });
   document.getElementById('spawn-random-btn').addEventListener('click', spawnRandomPlanet);
-
-  document.getElementById('analyze-btn').addEventListener('click', analyzePlanetPotential);
   document.getElementById('find-transits-btn').addEventListener('click', ()=> {
     const cand = detectTransit();
     if (cand) flashNotice(`Transit candidate: ${cand.planet.name}`);
     else flashNotice('No transit currently aligned');
   });
-
-  document.getElementById('advanced-analysis-btn').addEventListener('click', openAnalysisModal);
+  document.getElementById('open-analysis-modal').addEventListener('click', openAnalysisModal);
   document.getElementById('close-analysis-modal').addEventListener('click', closeAnalysisModal);
-  document.getElementById('analysis-form').addEventListener('submit', handleAnalysisSubmit);
-
+  document.getElementById('run-ml-analysis-btn').addEventListener('click', runMLAnalysis);
+  document.getElementById('visualize-analyzed-btn').addEventListener('click', visualizeAnalyzedSystem);
   document.getElementById('close-systems-modal').addEventListener('click', closeSystemsModal);
-
   document.getElementById('export-system-btn').addEventListener('click', exportCurrentSystemJSON);
   document.getElementById('import-system-btn').addEventListener('click', importSystemPrompt);
-
   document.getElementById('update-star-btn').addEventListener('click', updateStar);
-
   document.getElementById('exit-focus-btn').addEventListener('click', exitFocus);
+}
+
+function toggleSection(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const parent = el.parentElement;
+  const isOpen = parent.classList.contains('open');
+  if (isOpen) { parent.classList.remove('open'); el.classList.remove('open'); }
+  else { parent.classList.add('open'); el.classList.add('open'); }
 }
 
 function openAnalysisModal() {
@@ -730,146 +655,283 @@ function closeAnalysisModal() {
   document.getElementById('overlay').classList.remove('show');
 }
 
-function handleAnalysisSubmit(e) {
-  e.preventDefault();
-  closeAnalysisModal();
-
-  const getNum = (id, def) => {
-    const v = parseFloat(document.getElementById(id).value);
-    return isNaN(v) ? def : v;
-  };
-
-  const data = {
-    phys: document.getElementById('phys-meaning').value || '',
-    period: getNum('orb-period', 0),
-    radiusObj: getNum('radius-obj', 1),
-    insolation: getNum('insolation', 1366),
-    tempObj: getNum('temp-obj', 288),
-    tempStar: getNum('temp-star', 5772),
-    radiusStar: getNum('radius-star', 1),
-    gravStar: getNum('grav-star', 274),
-    ra: document.getElementById('ra').value || '',
-    dec: document.getElementById('dec').value || '',
-  };
-
-  // Constants
-  const G = 6.6743e-11;
-  const R_SUN = 6.96e8;
-  const AU = 1.496e11;
-  const T_SUN = 5772;
-  const F_EARTH = 1366;
-
-  // Compute d_au
-  let d_au;
-  if (data.period > 0 && data.gravStar > 0 && data.radiusStar > 0) {
-    const R_m = data.radiusStar * R_SUN;
-    const M = data.gravStar * R_m * R_m / G;
-    const p_sec = data.period * 86400;
-    const a_m = Math.pow((p_sec * p_sec * G * M) / (4 * Math.PI * Math.PI), 1/3);
-    d_au = a_m / AU;
-  } else if (data.insolation > 0) {
-    const l_lsun = data.radiusStar ** 2 * (data.tempStar / T_SUN) ** 4;
-    d_au = Math.sqrt(l_lsun * F_EARTH / data.insolation);
-  } else {
-    d_au = 1.0;
+/* ML ANALYSIS WITH API */
+async function runMLAnalysis() {
+  const btn = document.getElementById('run-ml-analysis-btn');
+  btn.disabled = true;
+  btn.textContent = 'Analyzing...';
+  
+  try {
+    const orbitalPeriod = parseFloat(document.getElementById('analysis-orbital-period').value) || 0.5;
+    const planetRadius = parseFloat(document.getElementById('analysis-planet-radius').value) || 1.0;
+    const insolation = parseFloat(document.getElementById('analysis-insolation').value) || 1.0;
+    const planetTemp = parseFloat(document.getElementById('analysis-planet-temp').value) || 288;
+    const starTemp = parseFloat(document.getElementById('analysis-star-temp').value) || 5778;
+    const starRadius = parseFloat(document.getElementById('analysis-star-radius').value) || 1.0;
+    const starGravity = parseFloat(document.getElementById('analysis-star-gravity').value) || 4.44;
+    const ra = parseFloat(document.getElementById('analysis-ra').value) || 0;
+    const dec = parseFloat(document.getElementById('analysis-dec').value) || 0;
+    const telescope = parseInt(document.getElementById('analysis-telescope').value) || 0;
+    
+    const payload = {
+      orbital_period: orbitalPeriod,
+      planet_radius: planetRadius,
+      insolation_flux: insolation,
+      equilibrium_temp: planetTemp,
+      stellar_teff: starTemp,
+      stellar_radius: starRadius,
+      stellar_logg: starGravity,
+      ra: ra,
+      dec: dec,
+      telescope_encoded: telescope
+    };
+    
+    const response = await fetch(API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload)
+    });
+    
+    if (!response.ok) {
+      throw new Error(`API Error: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    mlPredictionData = {
+      prediction: data.prediction,
+      probabilities: data.probabilities,
+      inputData: payload
+    };
+    
+    displayMLResults(data);
+    drawProbabilityChart(data.probabilities);
+    
+    flashNotice('ML analysis completed');
+  } catch (error) {
+    console.error('ML Analysis Error:', error);
+    flashNotice('Error: ' + error.message, 3000);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" fill="white"/></svg> Run ML Analysis';
   }
+}
 
-  // Analysis output
-  let output = `<div style="padding:8px;border-radius:8px;background:rgba(255,255,255,0.02);color:#cfefff">`;
-  output += `<b>Analysis Results:</b><br/>`;
-  const isHabitable = data.tempObj > 260 && data.tempObj < 310 && data.insolation > 800 && data.insolation < 1600 && data.radiusObj > 0.5 && data.radiusObj < 1.5;
-  output += `Habitable: ${isHabitable ? '<span style="color:#b7ffb3">Yes</span>' : '<span style="color:#ffb3b3">No</span>'}<br/>`;
-  output += `Computed distance: ${d_au.toFixed(2)} AU<br/>`;
-  output += `Star Coord: RA ${data.ra} Dec ${data.dec}<br/>`;
-  output += `Physical: ${data.phys}<br/>`;
-  output += `</div>`;
-  document.getElementById('analysis-output').innerHTML = output;
+function displayMLResults(data) {
+  const predictionMap = {
+    '0': { label: 'CONFIRMED', color: '#51cf66', icon: '✓' },
+    '1': { label: 'CANDIDATE', color: '#ffd93d', icon: '?' },
+    '2': { label: 'FALSE_POSITIVE', color: '#ff6b6b', icon: '✗' }
+  };
+  
+  const pred = predictionMap[data.prediction] || predictionMap['1'];
+  const probs = data.probabilities;
+  
+  const content = document.getElementById('ml-prediction-content');
+  content.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 2fr;gap:20px;">
+      <div style="background:rgba(${pred.color === '#51cf66' ? '81,207,102' : pred.color === '#ffd93d' ? '255,217,61' : '255,107,107'},0.12);border-radius:12px;padding:20px;border:2px solid ${pred.color};text-align:center;">
+        <div style="font-size:48px;margin-bottom:12px;">${pred.icon}</div>
+        <div style="color:${pred.color};font-weight:800;font-size:20px;margin-bottom:8px;">${pred.label}</div>
+        <div style="color:#cfefff;font-size:14px;">Model Prediction</div>
+      </div>
+      
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        <div style="background:rgba(81,207,102,0.08);border-radius:10px;padding:14px;border:1px solid rgba(81,207,102,0.3);">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <span style="color:#cfefff;font-weight:600;">CONFIRMED</span>
+            <span style="color:#51cf66;font-weight:700;font-size:18px;">${(probs.CONFIRMED * 100).toFixed(2)}%</span>
+          </div>
+          <div style="background:rgba(0,0,0,0.3);height:10px;border-radius:5px;overflow:hidden;">
+            <div style="width:${probs.CONFIRMED * 100}%;height:100%;background:linear-gradient(90deg, #51cf66, #40c057);transition:width 800ms ease;"></div>
+          </div>
+        </div>
+        
+        <div style="background:rgba(255,217,61,0.08);border-radius:10px;padding:14px;border:1px solid rgba(255,217,61,0.3);">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <span style="color:#cfefff;font-weight:600;">CANDIDATE</span>
+            <span style="color:#ffd93d;font-weight:700;font-size:18px;">${(probs.CANDIDATE * 100).toFixed(2)}%</span>
+          </div>
+          <div style="background:rgba(0,0,0,0.3);height:10px;border-radius:5px;overflow:hidden;">
+            <div style="width:${probs.CANDIDATE * 100}%;height:100%;background:linear-gradient(90deg, #ffd93d, #fcc419);transition:width 800ms ease;"></div>
+          </div>
+        </div>
+        
+        <div style="background:rgba(255,107,107,0.08);border-radius:10px;padding:14px;border:1px solid rgba(255,107,107,0.3);">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <span style="color:#cfefff;font-weight:600;">FALSE_POSITIVE</span>
+            <span style="color:#ff6b6b;font-weight:700;font-size:18px;">${(probs.FALSE_POSITIVE * 100).toFixed(2)}%</span>
+          </div>
+          <div style="background:rgba(0,0,0,0.3);height:10px;border-radius:5px;overflow:hidden;">
+            <div style="width:${probs.FALSE_POSITIVE * 100}%;height:100%;background:linear-gradient(90deg, #ff6b6b, #ff5252);transition:width 800ms ease;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  document.getElementById('ml-results').style.display = 'block';
+}
 
-  // Visualize
-  // Clear existing planets
+function drawProbabilityChart(probs) {
+  const canvas = document.getElementById('prob-canvas');
+  const ctx = canvas.getContext('2d');
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * devicePixelRatio;
+  canvas.height = rect.height * devicePixelRatio;
+  
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  
+  const w = canvas.width;
+  const h = canvas.height;
+  const padding = 40 * devicePixelRatio;
+  const chartW = w - padding * 2;
+  const chartH = h - padding * 2;
+  
+  const bgGrad = ctx.createLinearGradient(0, 0, 0, h);
+  bgGrad.addColorStop(0, 'rgba(10,15,30,0.4)');
+  bgGrad.addColorStop(1, 'rgba(5,8,15,0.4)');
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, w, h);
+  
+  const data = [
+    { label: 'CONFIRMED', value: probs.CONFIRMED, color: '#51cf66' },
+    { label: 'CANDIDATE', value: probs.CANDIDATE, color: '#ffd93d' },
+    { label: 'FALSE_POSITIVE', value: probs.FALSE_POSITIVE, color: '#ff6b6b' }
+  ];
+  
+  const barWidth = chartW / data.length * 0.7;
+  const barSpacing = chartW / data.length;
+  
+  data.forEach((item, i) => {
+    const x = padding + i * barSpacing + barSpacing / 2 - barWidth / 2;
+    const barHeight = item.value * chartH;
+    const y = padding + chartH - barHeight;
+    
+    const grad = ctx.createLinearGradient(x, y, x, y + barHeight);
+    grad.addColorStop(0, item.color);
+    grad.addColorStop(1, item.color + '80');
+    ctx.fillStyle = grad;
+    ctx.fillRect(x, y, barWidth, barHeight);
+    
+    ctx.strokeStyle = item.color;
+    ctx.lineWidth = 2 * devicePixelRatio;
+    ctx.strokeRect(x, y, barWidth, barHeight);
+    
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `bold ${14 * devicePixelRatio}px Inter, Arial`;
+    ctx.textAlign = 'center';
+    ctx.fillText(`${(item.value * 100).toFixed(1)}%`, x + barWidth / 2, y - 10 * devicePixelRatio);
+    
+    ctx.fillStyle = '#cfefff';
+    ctx.font = `${11 * devicePixelRatio}px Inter, Arial`;
+    const labelY = padding + chartH + 20 * devicePixelRatio;
+    ctx.fillText(item.label, x + barWidth / 2, labelY);
+  });
+}
+
+function visualizeAnalyzedSystem() {
+  if (!mlPredictionData) {
+    flashNotice('Run ML analysis first');
+    return;
+  }
+  
+  const data = mlPredictionData.inputData;
+  
   for (const p of planetsData) {
     scene.remove(p.mesh);
     scene.remove(p.orbitLine);
   }
   planetsData = [];
-
-  // Set star
-  const starSize = data.radiusStar * 3; // Scale to default units
+  
+  const starSize = data.stellar_radius;
   star.geometry.dispose();
   star.geometry = new THREE.SphereBufferGeometry(starSize, 256, 256);
   star.userData.size = starSize;
-  star.material.uniforms.starRadius.value = starSize;
-
-  // Set star color based on temp
+  
   let c1, c2, c3;
-  if (data.tempStar < 4000) {
-    c1 = 0xffcc6f;
-    c2 = 0xff6b6b;
-    c3 = 0xff0000;
-  } else if (data.tempStar < 6000) {
-    c1 = 0xfff3a0;
-    c2 = 0xff9a3b;
-    c3 = 0xff3b1f;
+  if (data.stellar_teff > 7500) {
+    c1 = new THREE.Color(0xA2C5FF);
+    c2 = new THREE.Color(0xFFFFFF);
+    c3 = new THREE.Color(0xC5D9FF);
+  } else if (data.stellar_teff > 6000) {
+    c1 = new THREE.Color(0xF8F7FF);
+    c2 = new THREE.Color(0xFFF4E8);
+    c3 = new THREE.Color(0xFFE6C7);
+  } else if (data.stellar_teff > 5200) {
+    c1 = new THREE.Color(0xFFF3A0);
+    c2 = new THREE.Color(0xFF9A3B);
+    c3 = new THREE.Color(0xFF3B1F);
+  } else if (data.stellar_teff > 3700) {
+    c1 = new THREE.Color(0xFFE6C7);
+    c2 = new THREE.Color(0xFFB380);
+    c3 = new THREE.Color(0xFF8247);
   } else {
-    c1 = 0xc3d5ff;
-    c2 = 0x6b9aff;
-    c3 = 0x3b6fff;
+    c1 = new THREE.Color(0xFFB380);
+    c2 = new THREE.Color(0xFF6B3B);
+    c3 = new THREE.Color(0xFF3B1F);
   }
-  star.material.uniforms.color1.value = new THREE.Color(c1);
-  star.material.uniforms.color2.value = new THREE.Color(c2);
-  star.material.uniforms.color3.value = new THREE.Color(c3);
-
-  // Update corona
+  
+  star.material.uniforms.color1.value = c1;
+  star.material.uniforms.color2.value = c2;
+  star.material.uniforms.color3.value = c3;
+  star.material.uniforms.starRadius.value = starSize;
+  
   const corona = scene.children.find(child => child.userData && child.userData.type === 'corona');
   if (corona) {
     corona.geometry.dispose();
     corona.geometry = new THREE.SphereBufferGeometry(starSize * 1.2, 64, 64);
   }
-
-  // Add planet
-  const planetName = data.phys || 'Analyzed Planet';
-  const planetSize = data.radiusObj * 0.5; // Visual scale
-  const planetDist = Math.min(120, 4 + d_au * 20); // Scale to scene
-  const planetSpeed = 0.012 * Math.sqrt(12 / planetDist); // Adjust for distance
-  const planetColor = data.tempObj > 600 ? 0xff6b6b : data.tempObj < 273 ? 0x4fc3f7 : 0x4fc3f7;
-  const planetGlow = 0.2;
-  const planetMat = data.radiusObj > 5 ? 'gas' : data.tempObj > 500 ? 'lava' : 'earth';
-  createPlanet(planetName, planetSize, planetDist, planetSpeed, planetColor, planetGlow, planetMat);
-
-  // Focus on the planet
-  focusPlanet(0);
-
-  // Add additional data to focus panel
-  const info = document.getElementById('focus-info');
-  info.innerHTML += `
-    <div style="margin-top:12px;">
-      <div>Orbital Period: <b>${data.period.toFixed(2)}</b> days</div>
-      <div>Insolation: <b>${data.insolation.toFixed(2)}</b> W/m²</div>
-      <div>Planet Temp: <b>${data.tempObj.toFixed(2)}</b> K</div>
-      <div>Star Temp: <b>${data.tempStar.toFixed(2)}</b> K</div>
-      <div>Star Gravity: <b>${data.gravStar.toFixed(2)}</b> m/s²</div>
-      <div>RA: <b>${data.ra}</b></div>
-      <div>Dec: <b>${data.dec}</b></div>
-      <div>Physical meaning: <b>${data.phys}</b></div>
-    </div>
-  `;
+  
+  const predictionMap = {
+    '0': 'CONFIRMED',
+    '1': 'CANDIDATE',
+    '2': 'FALSE_POSITIVE'
+  };
+  const predLabel = predictionMap[mlPredictionData.prediction] || 'UNKNOWN';
+  
+  const planetSize = data.planet_radius;
+  const semiMajorAxis = Math.pow(data.orbital_period / 365.25, 2/3);
+  const planetDistance = Math.max(starSize + planetSize + 5, semiMajorAxis * 15);
+  const planetSpeed = 0.01 / Math.sqrt(planetDistance / 10);
+  
+  let planetColor, materialType;
+  if (data.planet_radius < 1.25) {
+    planetColor = 0x4FC3F7;
+    materialType = 'earth';
+  } else if (data.planet_radius < 2.0) {
+    planetColor = 0x66BB6A;
+    materialType = 'earth';
+  } else if (data.planet_radius < 6.0) {
+    planetColor = 0xAB47BC;
+    materialType = 'gas';
+  } else {
+    planetColor = 0xFF7043;
+    materialType = 'gas';
+  }
+  
+  if (mlPredictionData.prediction === '2') {
+    planetColor = 0xff6b6b;
+  } else if (mlPredictionData.prediction === '0') {
+    planetColor = 0x51cf66;
+  }
+  
+  const planetName = `ML-${predLabel}`;
+  createPlanet(planetName, planetSize, planetDistance, planetSpeed, planetColor, 0.3, materialType, 0);
+  
+  camera.position.set(0, planetDistance * 0.5, planetDistance * 2 + starSize * 2);
+  controls.target.set(0, 0, 0);
+  controls.update();
+  
+  closeAnalysisModal();
+  flashNotice(`System visualized: ${predLabel}`);
 }
 
-function toggleSection(id) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  const parent = el.parentElement;
-  const isOpen = parent.classList.contains('open');
-  if (isOpen) { parent.classList.remove('open'); el.classList.remove('open'); }
-  else { parent.classList.add('open'); el.classList.add('open'); }
-}
-
-/* ============================================================
-   SYSTEM PERSISTENCE
-   ============================================================ */
+/* SYSTEM PERSISTENCE (shortened for space) */
 function saveCurrentSystem() {
   const name = (document.getElementById('system-name').value || 'Unnamed').trim();
-  if (!name) { alert('Введите имя системы'); return; }
+  if (!name) { alert('Enter system name'); return; }
   const sys = {
     name,
     planets: planetsData.map(p => ({
@@ -897,27 +959,22 @@ function loadSavedSystemsList() {
   arr.forEach((s, idx) => {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px;background:rgba(255,255,255,0.02);border-radius:8px;margin-bottom:6px';
-    
     const left = document.createElement('div');
     left.style.cssText = 'flex:1';
     left.innerHTML = `<div style="font-weight:700;color:#dff7ff">${s.name}</div><div style="font-size:11px;color:#cfefff">${s.planets.length} planets</div>`;
     row.appendChild(left);
-
     const actions = document.createElement('div');
     actions.style.cssText = 'display:flex;gap:6px';
-    
     const loadBtn = document.createElement('button');
     loadBtn.className = 'btn btn-primary';
     loadBtn.textContent = 'Load';
     loadBtn.style.padding = '6px 10px';
     loadBtn.addEventListener('click', ()=> { loadSystem(idx); flashNotice(`Loaded ${s.name}`); });
-    
     const delBtn = document.createElement('button');
     delBtn.className = 'btn btn-danger';
     delBtn.textContent = '×';
     delBtn.style.padding = '6px 12px';
     delBtn.addEventListener('click', ()=> deleteSaved(idx));
-    
     actions.appendChild(loadBtn);
     actions.appendChild(delBtn);
     row.appendChild(actions);
@@ -944,24 +1001,19 @@ function populateSystemsModal(){
   arr.forEach((s, idx) => {
     const item = document.createElement('div');
     item.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px;background:rgba(255,255,255,0.02);border-radius:10px';
-    
     const meta =document.createElement('div');
     meta.innerHTML = `<div style="font-weight:800;color:#dff7ff">${s.name}</div><div style="font-size:12px;color:#cfefff">${s.planets.length} planets • ${new Date(s.timestamp).toLocaleString()}</div>`;
     item.appendChild(meta);
-
     const actions = document.createElement('div');
     actions.style.cssText = 'display:flex;gap:8px';
-    
     const loadBtn = document.createElement('button');
     loadBtn.className = 'btn btn-primary';
     loadBtn.textContent = 'Load';
     loadBtn.addEventListener('click', ()=> { loadSystem(idx); closeSystemsModal(); });
-    
     const delBtn = document.createElement('button');
     delBtn.className = 'btn btn-danger';
     delBtn.textContent = 'Delete';
     delBtn.addEventListener('click', ()=> { deleteSaved(idx); populateSystemsModal(); });
-    
     actions.appendChild(loadBtn);
     actions.appendChild(delBtn);
     item.appendChild(actions);
@@ -984,13 +1036,11 @@ function loadSystem(idx) {
   const arr = JSON.parse(localStorage.getItem('exoplanetSystems') || '[]');
   if (!arr[idx]) { flashNotice('System not found'); return; }
   const sys = arr[idx];
-  
   for (const p of planetsData) {
     scene.remove(p.mesh);
     scene.remove(p.orbitLine);
   }
   planetsData = [];
-  
   sys.planets.forEach(pl => {
     createPlanet(pl.name, pl.size, pl.distance, pl.speed, pl.color, pl.glowIntensity, pl.materialType, pl.angle || 0);
   });
@@ -1005,8 +1055,7 @@ function exportCurrentSystemJSON() {
     timestamp: Date.now()
   };
   const blob = new Blob([JSON.stringify(sys, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
+  const url = URL.createObjectURL(blob);const a = document.createElement('a');
   a.href = url;
   a.download = name.replace(/\s+/g,'_') + '.json';
   a.click();
@@ -1026,13 +1075,11 @@ function importSystemPrompt() {
       try {
         const sys = JSON.parse(reader.result);
         if (!sys.planets) { alert('Invalid system JSON'); return; }
-        
         for (const p of planetsData) {
           scene.remove(p.mesh);
           scene.remove(p.orbitLine);
         }
         planetsData = [];
-        
         sys.planets.forEach(pl => createPlanet(pl.name, pl.size, pl.distance, pl.speed, pl.color, pl.glowIntensity, pl.materialType, pl.angle || 0));
         document.getElementById('system-name').value = sys.name || 'Imported System';
         flashNotice('Imported system');
@@ -1046,16 +1093,13 @@ function importSystemPrompt() {
   inp.click();
 }
 
-/* ============================================================
-   3D PREVIEW RENDERERS FOR PLANETS
-   ============================================================ */
+/* 3D PREVIEW RENDERERS */
 let sharedPreviewRenderer;
 const previewRenderers = new Map();
 
 function createPlanetPreview(planetData) {
   const container = document.createElement('div');
   container.style.cssText = 'width:110px;height:64px;border-radius:8px;overflow:hidden;background:#000';
-  
   const previewCanvas = document.createElement('canvas');
   const pixelRatio = sharedPreviewRenderer.getPixelRatio();
   previewCanvas.width = 110 * pixelRatio;
@@ -1064,11 +1108,9 @@ function createPlanetPreview(planetData) {
   previewCanvas.style.height = '64px';
   const previewCtx = previewCanvas.getContext('2d');
   container.appendChild(previewCanvas);
-
   const miniScene = new THREE.Scene();
   const miniCamera = new THREE.PerspectiveCamera(45, 110/64, 0.1, 100);
   miniCamera.position.set(0, 0, planetData.size * 3);
-  
   const geom = new THREE.SphereBufferGeometry(planetData.size, 32, 32);
   const mat = new THREE.ShaderMaterial({
     vertexShader: planetVertexShader,
@@ -1082,24 +1124,19 @@ function createPlanetPreview(planetData) {
   });
   const miniPlanet = new THREE.Mesh(geom, mat);
   miniScene.add(miniPlanet);
-  
   const light = new THREE.PointLight(0xffffff, 1.5, 100);
   light.position.set(5, 3, 5);
   miniScene.add(light);
-  
   const ambientLight = new THREE.AmbientLight(0x404040, 0.5);
   miniScene.add(ambientLight);
-  
   const animatePreview = () => {
     miniPlanet.rotation.y += 0.005;
     if (mat.uniforms) mat.uniforms.time.value += 0.016;
     sharedPreviewRenderer.render(miniScene, miniCamera);
     previewCtx.drawImage(sharedPreviewRenderer.domElement, 0, 0, previewCanvas.width, previewCanvas.height);
   };
-  
   const id = 'preview_' + Date.now() + '_' + Math.random();
   previewRenderers.set(id, { animate: animatePreview, scene: miniScene });
-  
   return { container, id };
 }
 
@@ -1123,53 +1160,40 @@ function destroyPreview(id) {
   }
 }
 
-/* ============================================================
-   PLANET LIST UI WITH 3D PREVIEWS
-   ============================================================ */
 function updateSystemListUI() {
   const list = document.getElementById('system-planets-list');
-  
   const oldRows = Array.from(list.children);
   oldRows.forEach(row => {
     const pid = row.dataset.previewId;
     if (pid) destroyPreview(pid);
   });
-  
   list.innerHTML = '';
-  
   planetsData.forEach((p, idx) => {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:8px;align-items:center;justify-content:space-between;padding:8px;background:rgba(255,255,255,0.02);border-radius:8px';
-    
     const left = document.createElement('div');
     left.style.cssText = 'display:flex;gap:8px;align-items:center';
-    
     const { container, id } = createPlanetPreview(p);
     row.dataset.previewId = id;
     left.appendChild(container);
-    
     const meta = document.createElement('div');
     meta.style.flex = '1';
     meta.innerHTML = `<div style="font-weight:800;color:#dff7ff">${p.name}</div><div style="font-size:11px;color:#cfefff">Size: ${p.size.toFixed(2)} • Dist: ${p.distance.toFixed(1)}</div>`;
     left.appendChild(meta);
     row.appendChild(left);
-
     const actions = document.createElement('div');
     actions.style.cssText = 'display:flex;flex-direction:column;gap:4px';
-    
     const editBtn = document.createElement('button');
     editBtn.className = 'btn btn-primary';
     editBtn.textContent = 'Edit';
     editBtn.style.padding = '4px 8px';
     editBtn.style.fontSize = '11px';
     editBtn.onclick = ()=> openPlanetEditor(idx);
-    
     const focusBtn = document.createElement('button');
     focusBtn.className = 'btn';
     focusBtn.style.cssText = 'background:linear-gradient(90deg,#8b5cf6,#06b6d4);padding:4px 8px;fontSize:11px';
     focusBtn.textContent = 'Focus';
     focusBtn.onclick = ()=> focusPlanet(idx);
-    
     actions.appendChild(editBtn);
     actions.appendChild(focusBtn);
     row.appendChild(actions);
@@ -1177,44 +1201,35 @@ function updateSystemListUI() {
   });
 }
 
-/* ============================================================
-   OBJECT FOCUS SYSTEM
-   ============================================================ */
 function focusPlanet(idx) {
   const p = planetsData[idx];
   if (!p) return;
-  
   focusedObject = { type: 'planet', data: p, mesh: p.mesh };
-  
   const panel = document.getElementById('focus-panel');
   panel.classList.add('show');
-  
   const info = document.getElementById('focus-info');
   info.innerHTML = `
     <div style="font-size:13px;color:#cfefff;">
       <div style="margin-bottom:8px;"><b style="color:#7fe0ff">${p.name}</b></div>
-      <div>Размер: <b>${p.size.toFixed(2)}</b> R⊕</div>
-      <div>Орбита: <b>${p.distance.toFixed(2)}</b> AU</div>
-      <div>Скорость: <b>${p.speed.toFixed(4)}</b></div>
-      <div>Тип: <b>${p.materialType}</b></div>
+      <div>Size: <b>${p.size.toFixed(2)}</b> R⊕</div>
+      <div>Orbit: <b>${p.distance.toFixed(2)}</b> AU</div>
+      <div>Speed: <b>${p.speed.toFixed(4)}</b></div>
+      <div>Type: <b>${p.materialType}</b></div>
     </div>
     <div style="margin-top:12px;display:flex;flex-direction:column;gap:6px;">
       <input id="focus-edit-name" class="input" value="${p.name}" style="margin:0">
       <input id="focus-edit-size" class="input" type="number" step="0.1" value="${p.size}" style="margin:0">
       <input id="focus-edit-distance" class="input" type="number" step="0.5" value="${p.distance}" style="margin:0">
-      <button class="btn btn-primary" id="focus-save-btn" style="width:100%">Сохранить изменения</button>
-      <button class="btn btn-danger" id="focus-delete-btn" style="width:100%">Удалить планету</button>
+      <button class="btn btn-primary" id="focus-save-btn" style="width:100%">Save Changes</button>
+      <button class="btn btn-danger" id="focus-delete-btn" style="width:100%">Delete Planet</button>
     </div>
   `;
-  
   document.getElementById('focus-save-btn').addEventListener('click', ()=> {
     p.name = document.getElementById('focus-edit-name').value;
     p.size = parseFloat(document.getElementById('focus-edit-size').value);
     p.distance = parseFloat(document.getElementById('focus-edit-distance').value);
-    
     p.mesh.geometry.dispose();
     p.mesh.geometry = new THREE.SphereBufferGeometry(p.size, 96, 96);
-    
     scene.remove(p.orbitLine);
     const points = [];
     for (let i=0;i<=360;i++){
@@ -1227,16 +1242,13 @@ function focusPlanet(idx) {
     );
     p.orbitLine.renderOrder = -1;
     scene.add(p.orbitLine);
-    
     updateSystemListUI();
     updateStarUniforms();
-    flashNotice('Планета обновлена');
-    
+    flashNotice('Planet updated');
     info.querySelector('b').textContent = p.name;
   });
-  
   document.getElementById('focus-delete-btn').addEventListener('click', ()=> {
-    if (!confirm(`Удалить планету ${p.name}?`)) return;
+    if (!confirm(`Delete planet ${p.name}?`)) return;
     scene.remove(p.mesh);
     scene.remove(p.orbitLine);
     const pidx = planetsData.findIndex(pl => pl.id === p.id);
@@ -1244,21 +1256,19 @@ function focusPlanet(idx) {
     exitFocus();
     updateSystemListUI();
     updateStarUniforms();
-    flashNotice('Планета удалена');
+    flashNotice('Planet deleted');
   });
 }
 
 function focusStar() {
   focusedObject = { type: 'star', data: star.userData, mesh: star };
-  
   const panel = document.getElementById('focus-panel');
   panel.classList.add('show');
-  
   const info = document.getElementById('focus-info');
   info.innerHTML = `
     <div style="font-size:13px;color:#cfefff;">
       <div style="margin-bottom:8px;"><b style="color:#7fe0ff">Central Star</b></div>
-      <div>Размер: <b>${star.userData.size.toFixed(2)}</b></div>
+      <div>Size: <b>${star.userData.size.toFixed(2)}</b></div>
     </div>
     <div style="margin-top:12px;display:flex;flex-direction:column;gap:6px;">
       <input id="focus-star-size" class="input" type="number" step="0.1" value="${star.userData.size}" style="margin:0">
@@ -1267,16 +1277,14 @@ function focusStar() {
         <input id="focus-star-c2" type="color" value="#${star.material.uniforms.color2.value.getHexString()}" style="border-radius:8px;height:44px;border:none;padding:0">
         <input id="focus-star-c3" type="color" value="#${star.material.uniforms.color3.value.getHexString()}" style="border-radius:8px;height:44px;border:none;padding:0">
       </div>
-      <button class="btn btn-primary" id="focus-star-save" style="width:100%">Сохранить изменения</button>
+      <button class="btn btn-primary" id="focus-star-save" style="width:100%">Save Changes</button>
     </div>
   `;
-  
   document.getElementById('focus-star-save').addEventListener('click', () => {
     const newSize = parseFloat(document.getElementById('focus-star-size').value);
     const c1 = new THREE.Color(document.getElementById('focus-star-c1').value);
     const c2 = new THREE.Color(document.getElementById('focus-star-c2').value);
     const c3 = new THREE.Color(document.getElementById('focus-star-c3').value);
-    
     star.geometry.dispose();
     star.geometry = new THREE.SphereBufferGeometry(newSize, 256, 256);
     star.userData.size = newSize;
@@ -1284,13 +1292,11 @@ function focusStar() {
     star.material.uniforms.color2.value = c2;
     star.material.uniforms.color3.value = c3;
     star.material.uniforms.starRadius.value = newSize;
-    
     const corona = scene.children.find(child => child.userData && child.userData.type === 'corona');
     if (corona) {
       corona.geometry.dispose();
       corona.geometry = new THREE.SphereBufferGeometry(newSize * 1.2, 64, 64);
     }
-    
     updateStarUniforms();
     flashNotice('Star updated');
     exitFocus();
@@ -1300,27 +1306,20 @@ function focusStar() {
 function exitFocus() {
   focusedObject = null;
   document.getElementById('focus-panel').classList.remove('show');
-  
   const start = performance.now();
   const startPos = camera.position.clone();
   const startTarget = controls.target.clone();
-  
   function animate(now) {
     const t = Math.min(1, (now - start) / 1200);
     const ease = 0.5 - Math.cos(Math.PI * t) / 2;
-    
     camera.position.lerpVectors(startPos, cameraInitialPos, ease);
     controls.target.lerpVectors(startTarget, cameraInitialTarget, ease);
     controls.update();
-    
     if (t < 1) requestAnimationFrame(animate);
   }
   requestAnimationFrame(animate);
 }
 
-/* ============================================================
-   PLANET EDITOR
-   ============================================================ */
 function openPlanetEditor(idx) {
   const p = planetsData[idx];
   const editor = document.createElement('div');
@@ -1343,36 +1342,30 @@ function openPlanetEditor(idx) {
       </div>
     </div>
   `;
-  
   const list = document.getElementById('system-planets-list');
   const existing = document.getElementById('planet-editor-'+idx);
   if (existing) existing.remove();
-  
   const wrapper = document.createElement('div');
   wrapper.id = 'planet-editor-'+idx;
   wrapper.appendChild(editor);
   list.insertBefore(wrapper, list.children[idx+1] || null);
-  
   document.getElementById(`editor-save-${idx}`).addEventListener('click', ()=>{
     const newName = document.getElementById(`editor-name-${idx}`).value;
     const newSize = parseFloat(document.getElementById(`editor-size-${idx}`).value);
     const newDist = parseFloat(document.getElementById(`editor-dist-${idx}`).value);
     const newSpeed = parseFloat(document.getElementById(`editor-speed-${idx}`).value);
     const newColor = document.getElementById(`editor-color-${idx}`).value;
-    
     const pd = planetsData[idx];
     pd.name = newName;
     pd.size = newSize;
     pd.distance = newDist;
     pd.speed = newSpeed;
     pd.color = parseInt(newColor.replace('#',''),16);
-    
     pd.mesh.geometry.dispose();
     pd.mesh.geometry = new THREE.SphereBufferGeometry(pd.size, 96, 96);
     if (pd.mesh.material && pd.mesh.material.uniforms) {
       pd.mesh.material.uniforms.baseColor.value = new THREE.Color(pd.color);
     }
-    
     scene.remove(pd.orbitLine);
     const pts = [];
     for (let i=0;i<=360;i++){
@@ -1385,13 +1378,11 @@ function openPlanetEditor(idx) {
     );
     pd.orbitLine.renderOrder = -1;
     scene.add(pd.orbitLine);
-    
     updateSystemListUI();
     updateStarUniforms();
     flashNotice('Planet updated');
     wrapper.remove();
   });
-  
   document.getElementById(`editor-delete-${idx}`).addEventListener('click', ()=>{
     if (!confirm('Delete this planet?')) return;
     const pd = planetsData[idx];
@@ -1403,21 +1394,16 @@ function openPlanetEditor(idx) {
     flashNotice('Planet deleted');
     wrapper.remove();
   });
-  
   document.getElementById(`editor-cancel-${idx}`).addEventListener('click', ()=>{
     wrapper.remove();
   });
 }
 
-/* ============================================================
-   UPDATE STAR
-   ============================================================ */
 function updateStar() {
   const size = parseFloat(document.getElementById('star-size').value);
   const c1 = new THREE.Color(document.getElementById('star-color1').value);
   const c2 = new THREE.Color(document.getElementById('star-color2').value);
   const c3 = new THREE.Color(document.getElementById('star-color3').value);
-
   star.geometry.dispose();
   star.geometry = new THREE.SphereBufferGeometry(size, 256, 256);
   star.userData.size = size;
@@ -1425,20 +1411,15 @@ function updateStar() {
   star.material.uniforms.color2.value = c2;
   star.material.uniforms.color3.value = c3;
   star.material.uniforms.starRadius.value = size;
-
   const corona = scene.children.find(child => child.userData && child.userData.type === 'corona');
   if (corona) {
     corona.geometry.dispose();
     corona.geometry = new THREE.SphereBufferGeometry(size * 1.2, 64, 64);
   }
-
   updateStarUniforms();
   flashNotice('Star updated');
 }
 
-/* ============================================================
-   ADD PLANET
-   ============================================================ */
 function addPlanetFromForm() {
   const name = document.getElementById('new-planet-name').value || 'Planet';
   const size = parseFloat(document.getElementById('new-planet-size').value) || 1;
@@ -1466,40 +1447,13 @@ function spawnRandomPlanet() {
   updateSystemListUI();
 }
 
-/* ============================================================
-   ANALYSIS
-   ============================================================ */
-function analyzePlanetPotential() {
-  const radius = parseFloat(document.getElementById('hab-radius').value);
-  const distance = parseFloat(document.getElementById('hab-distance').value);
-  if (!radius || !distance) { alert('Введите радиус и расстояние'); return; }
-  const HAB_MIN = 0.8, HAB_MAX = 1.5, ROCKY = 1.75, SUPER = 2.5;
-  let out = `<div style="padding:8px;border-radius:8px;background:rgba(255,255,255,0.02);color:#cfefff">`;
-  out += `<b>Анализ планеты:</b><br/>Радиус: ${radius.toFixed(2)} R⊕<br/>Орбита: ${distance.toFixed(2)} AU<br/>`;
-  out += `<hr style="border:none;height:1px;background:rgba(127,224,247,0.06);margin:8px 0"/>`;
-  if (distance>=HAB_MIN && distance<=HAB_MAX && radius<=ROCKY) {
-    out += `<div style="color:#b7ffb3"><b>✅ Высокий потенциал обитаемости</b></div>`;
-  } else if (distance>=HAB_MIN && distance<=HAB_MAX && radius<=SUPER) {
-    out += `<div style="color:#ffe69f"><b>⚠️ Возможная суперземля</b></div>`;
-  } else {
-    out += `<div style="color:#ffb3b3"><b>❌ Низкая вероятность</b></div>`;
-  }
-  out += `</div>`;
-  document.getElementById('analysis-output').innerHTML = out;
-}
-
-/* ============================================================
-   MOUSE INTERACTIONS
-   ============================================================ */
 function onMouseMove(e) {
   mouse.x = (e.clientX / innerWidth)*2 - 1;
   mouse.y = -(e.clientY / innerHeight)*2 + 1;
-  
   raycaster.setFromCamera(mouse, camera);
   const objects = [star, ...planetsData.map(p=>p.mesh)];
   const hits = raycaster.intersectObjects(objects, false);
   const tt = document.getElementById('tooltip');
-  
   if (hits.length) {
     const obj = hits[0].object;
     const ud = obj.userData || {};
@@ -1512,7 +1466,6 @@ function onMouseMove(e) {
     } else {
       document.getElementById('tooltip-sub').textContent = `Size: ${(ud.size||1).toFixed(2)} • Dist: ${(ud.distance||0).toFixed(2)}`;
     }
-    
     planetsData.forEach(p => {
       if (p.mesh === obj) p.orbitLine.material.opacity = 0.55;
       else p.orbitLine.material.opacity = 0.12;
@@ -1529,7 +1482,6 @@ function onClick(e) {
   raycaster.setFromCamera(mouse, camera);
   const objects = [star, ...planetsData.map(p=>p.mesh)];
   const hits = raycaster.intersectObjects(objects, false);
-  
   if (hits.length) {
     const mesh = hits[0].object;
     if (mesh === star) {
@@ -1543,34 +1495,25 @@ function onClick(e) {
   }
 }
 
-/* ============================================================
-   ANIMATION LOOP
-   ============================================================ */
 function animate() {
   requestAnimationFrame(animate);
   time += 0.016 * animationSpeed;
-
   if (star && star.material && star.material.uniforms) {
     star.material.uniforms.time.value = time;
   }
-  
   for (const p of planetsData) {
     if (p.mesh && p.mesh.material && p.mesh.material.uniforms) {
       p.mesh.material.uniforms.time.value = time;
     }
   }
-
   if (star) star.rotation.y += 0.0009 * animationSpeed;
-
   for (const p of planetsData) {
     p.angle += p.speed * animationSpeed;
     p.mesh.position.x = Math.cos(p.angle) * p.distance;
     p.mesh.position.z = Math.sin(p.angle) * p.distance;
     p.mesh.position.y = 0;
   }
-  
   updateStarUniforms();
-
   if (focusedObject) {
     let targetPos = focusedObject.mesh.position.clone();
     targetPos.y += 3;
@@ -1580,24 +1523,20 @@ function animate() {
       0,
       Math.sin(time * 0.1) * sideDist
     ));
-    
     camera.position.lerp(targetPos, 0.05);
     controls.target.lerp(focusedObject.mesh.position, 0.05);
   }
-
   if (directionalLight) {
     directionalLight.position.copy(camera.position);
     directionalLight.target.position.copy(star.position);
     directionalLight.target.updateMatrixWorld();
   }
-
   const cand = detectTransit();
   const brightness = computeBrightness(cand);
   if (brightnessHistory.length >= historyMax) brightnessHistory.shift();
   const prev = brightnessHistory.length ? brightnessHistory[brightnessHistory.length-1] : 1.0;
   const lerped = prev + (brightness - prev) * 0.18;
   brightnessHistory.push(lerped);
-
   const lc = document.getElementById('light-curve');
   if (cand) {
     if (!transitActive) {
@@ -1619,17 +1558,12 @@ function animate() {
       lc.classList.remove('show');
     }
   }
-
   drawChart();
   animateAllPreviews();
-  
   controls.update();
   composer.render();
 }
 
-/* ============================================================
-   HELPERS
-   ============================================================ */
 function flashNotice(text, ttl=1800) {
   const el = document.createElement('div');
   el.textContent = text;
@@ -1644,13 +1578,11 @@ function onWindowResize() {
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
   composer.setSize(innerWidth, innerHeight);
-
   if (chartCanvas) {
     const rect = document.getElementById('light-curve').getBoundingClientRect();
     chartCanvas.width = Math.floor(Math.min(420, rect.width * 0.68) * devicePixelRatio);
     chartCanvas.height = Math.floor(140 * devicePixelRatio);
   }
-
   const pc = document.getElementById('panel-particles');
   if (pc) {
     const parent = pc.parentElement;
