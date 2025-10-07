@@ -30,4 +30,5 @@ services:
 
 networks:
   proxy-network:
-    external: true
+    external:
+      name: proxy_proxy-network  # Replace with the actual name from 'docker network ls'
