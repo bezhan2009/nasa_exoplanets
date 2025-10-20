@@ -22,13 +22,12 @@ services:
     restart: always
     environment:
       - VIRTUAL_HOST=212.67.9.175
-      - VIRTUAL_PORT=80
+      - VIRTUAL_PORT=3000
+    ports:
+      - "3000:3000"
     networks:
       - proxy-network
-    # ⛔ ports тут НЕ НУЖЕН, иначе конфликт с nginx-proxy
-    # ⛔ letsencrypt тоже не нужен, так как нет домена
 
 networks:
   proxy-network:
     external: true
-
