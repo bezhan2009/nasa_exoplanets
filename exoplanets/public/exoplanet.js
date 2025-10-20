@@ -19,8 +19,9 @@ let focusedObject = null;
 let cameraInitialPos = new THREE.Vector3();
 let cameraInitialTarget = new THREE.Vector3();
 let mlPredictionData = null;
+let sharedPreviewRenderer;
 
-// GLSL Shaders (same as before)
+// GLSL Shaders (improved)
 const starVertexShader = `
   varying vec2 vUv;
   varying vec3 vNormal;
@@ -102,7 +103,7 @@ const starFragmentShader = `
 
   float fbm(vec3 p) {
     float v = 0.0; float a = 0.5;
-    for(int i=0;i<6;i++) {
+    for(int i=0;i<8;i++) {
       v += a * snoise(p);
       p *= 2.0;
       a *= 0.5;
@@ -127,6 +128,8 @@ const starFragmentShader = `
     base *= (1.0 - radial*0.36);
     float flare = pow(max(0.0, snoise(vPosition*2.0 + time*2.0)), 6.0);
     base += vec3(1.0,0.92,0.7) * flare * 2.4;
+    float spots = smoothstep(0.65, 0.45, fbm(pos*2.5 - time*0.08));
+    base *= (1.0 - spots * 0.25);
     float shadowMask = 1.0;
     for(int i=0; i<MAX_PLANETS; i++){
       if(i >= planetCount) break;
@@ -153,7 +156,8 @@ const planetVertexShader = `
   varying vec3 vPosition;
   varying vec3 vWorldPosition;
   void main(){
-    vUv = uv;vNormal = normalize(normalMatrix * normal);
+    vUv = uv;
+    vNormal = normalize(normalMatrix * normal);
     vPosition = position;
     vec4 worldPos = modelMatrix * vec4(position,1.0);
     vWorldPosition = worldPos.xyz;
@@ -182,31 +186,39 @@ const planetFragmentShader = `
   }
   float fbm(vec2 p){
     float v = 0.0; float a = 0.5;
-    for(int i=0;i<5;i++){ v += a * noise(p); p *= 2.0; a *= 0.5; }
+    for(int i=0;i<7;i++){ v += a * noise(p); p *= 2.0; a *= 0.5; }
     return v;
   }
   void main(){
-    float continents = fbm(vUv*8.0 + time*0.02);
-    float clouds = fbm(vUv*12.0 + time*0.06);
     float lat = abs(vUv.y - 0.5)*2.0;
     float ice = smoothstep(0.75, 0.92, lat);
-    if(materialType==1){
-      continents = 0.0;
-      clouds = smoothstep(0.28,0.7, fbm(vUv*6.0 + time*0.05));
-      ice = 0.0;
-    } else if(materialType==2){
-      continents = smoothstep(0.45,0.62,continents);
-      clouds = 0.0;
-      ice = 0.0;
-    } else {
+    vec3 surface;
+    float continents = fbm(vUv*8.0 + time*0.02);
+    float clouds = fbm(vUv*12.0 + time*0.06);
+    if(materialType==0){ // earth
       continents = smoothstep(0.4,0.6,continents);
       clouds = smoothstep(0.45,0.65,clouds);
+      vec3 ocean = baseColor * 0.6;
+      vec3 land = mix(vec3(0.3,0.6,0.2), baseColor * 1.25, continents*0.5 + 0.5);
+      surface = mix(ocean, land, continents);
+      surface = mix(surface, vec3(0.96,0.98,1.0), ice);
+    } else if(materialType==1){ // gas
+      float bandFreq = 20.0 + sin(time*0.02)*2.0;
+      float bands = (sin(lat * bandFreq) * 0.5 + 0.5) * 0.3 + 0.7;
+      bands += fbm(vec2(vUv.x * 2.0, lat * 4.0) + time*0.03) * 0.2;
+      vec3 col1 = baseColor * 0.8;
+      vec3 col2 = baseColor * 1.2;
+      surface = mix(col1, col2, bands);
+      clouds = fbm(vUv*8.0 + time*0.04);
+      clouds = smoothstep(0.3,0.7,clouds);
+    } else if(materialType==2){ // lava
+      continents = smoothstep(0.45,0.62,continents);
+      vec3 lavaColor = vec3(1.0,0.4,0.1);
+      float glow = (sin(time*3.0 + vUv.x*5.0)*0.5 + 0.5) * continents;
+      surface = mix(vec3(0.2,0.1,0.05), lavaColor, continents + glow*0.5);
+      clouds = 0.0;
+      ice = 0.0;
     }
-    vec3 ocean = baseColor * 0.6;
-    vec3 land = baseColor * 1.25;
-    if(materialType==2){ ocean = vec3(0.82,0.24,0.12); land = vec3(1.0,0.5,0.2); }
-    vec3 surface = mix(ocean, land, continents);
-    surface = mix(surface, vec3(0.96,0.98,1.0), ice);
     vec3 cloudColor = vec3(1.0);
     vec3 color = mix(surface, cloudColor, clouds*0.35);
     vec3 viewDir = normalize(vWorldPosition - cameraPosition);
@@ -222,23 +234,23 @@ const planetFragmentShader = `
 function init() {
   scene = new THREE.Scene();
   scene.fog = new THREE.FogExp2(0x000000, 0.0012);
-  camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 4000);
+  camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 4000);
   camera.position.set(0, 14, 40);
   cameraInitialPos.copy(camera.position);
   cameraInitialTarget.set(0, 0, 0);
   renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-  renderer.setSize(innerWidth, innerHeight);
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   document.getElementById('canvas-container').appendChild(renderer.domElement);
   sharedPreviewRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   sharedPreviewRenderer.setSize(110, 64);
-  sharedPreviewRenderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  sharedPreviewRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   composer = new THREE.EffectComposer(renderer);
   const renderPass = new THREE.RenderPass(scene, camera);
   composer.addPass(renderPass);
-  const bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 1.8, 0.6, 0.9);
+  const bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.8, 0.6, 0.9);
   bloomPass.threshold = 0.04;
   bloomPass.strength = 1.5;
   bloomPass.radius = 0.9;
@@ -277,7 +289,7 @@ function init() {
 }
 
 function createStar() {
-  const geom = new THREE.SphereBufferGeometry(3.0, 256, 256);
+  const geom = new THREE.SphereGeometry(3.0, 256, 256);
   const planetPositions = new Array(MAX_PLANETS).fill(0).map(() => new THREE.Vector3(0, 0, 0));
   const planetRadii = new Array(MAX_PLANETS).fill(0);
   const mat = new THREE.ShaderMaterial({
@@ -301,7 +313,7 @@ function createStar() {
   star.userData = { type: 'star', name: 'Central Star', size: 3.0 };
   scene.add(star);
   const corona = new THREE.Mesh(
-    new THREE.SphereBufferGeometry(3.6, 64, 64),
+    new THREE.SphereGeometry(3.6, 64, 64),
     new THREE.MeshBasicMaterial({ color: 0xffc290, transparent: true, opacity: 0.14, blending: THREE.AdditiveBlending })
   );
   corona.renderOrder = 1;
@@ -310,7 +322,7 @@ function createStar() {
 }
 
 function createBackdrop() {
-  const geo = new THREE.SphereBufferGeometry(1800, 32, 32);
+  const geo = new THREE.SphereGeometry(1800, 32, 32);
   const mat = new THREE.MeshBasicMaterial({ color: 0x000008, side: THREE.BackSide });
   const back = new THREE.Mesh(geo, mat);
   scene.add(back);
@@ -340,7 +352,7 @@ function createInitialPlanets() {
 }
 
 function createPlanet(name, size, distance, speed, color, glowIntensity, materialType, initialAngle=0) {
-  const geom = new THREE.SphereBufferGeometry(size, 96, 96);
+  const geom = new THREE.SphereGeometry(size, 128, 128);
   const mat = new THREE.ShaderMaterial({
     vertexShader: planetVertexShader,
     fragmentShader: planetFragmentShader,
@@ -424,11 +436,14 @@ function computeBrightness(candidate) {
 let chartCanvas, chartCtx;
 function setupChartCanvas() {
   chartCanvas = document.getElementById('curve-canvas');
+  if (!chartCanvas) return;
   chartCtx = chartCanvas.getContext('2d');
   function resize() {
     const rect = document.getElementById('light-curve').getBoundingClientRect();
-    chartCanvas.width = Math.floor(Math.min(420, rect.width * 0.68) * devicePixelRatio);
-    chartCanvas.height = Math.floor(140 * devicePixelRatio);
+    chartCanvas.width = Math.floor(Math.min(420, rect.width * 0.68) * window.devicePixelRatio);
+    chartCanvas.height = Math.floor(140 * window.devicePixelRatio);
+    chartCanvas.style.width = Math.min(420, rect.width * 0.68) + 'px';
+    chartCanvas.style.height = '140px';
   }
   window.addEventListener('resize', resize);
   resize();
@@ -445,7 +460,7 @@ function drawChart() {
   grd.addColorStop(1, 'rgba(10,12,18,0.0)');
   chartCtx.fillStyle = grd;
   chartCtx.fillRect(0,0,w,h);
-  const padding = 12 * devicePixelRatio;
+  const padding = 12 * window.devicePixelRatio;
   const plotW = w - padding*2;
   const plotH = h - padding*2;
   const len = brightnessHistory.length;
@@ -478,7 +493,7 @@ function drawChart() {
     if (i===0) chartCtx.moveTo(x,y); else chartCtx.lineTo(x,y);
   }
   chartCtx.strokeStyle = 'rgba(140,235,255,0.98)';
-  chartCtx.lineWidth = 2*devicePixelRatio;
+  chartCtx.lineWidth = 2*window.devicePixelRatio;
   chartCtx.stroke();
   const lastIdx = len-1;
   const t = lastIdx/(len-1);
@@ -487,13 +502,13 @@ function drawChart() {
   const y = padding + (1 - v) * plotH;
   chartCtx.beginPath();
   chartCtx.fillStyle = 'rgba(255,255,255,0.95)';
-  chartCtx.arc(x, y, 3*devicePixelRatio, 0, Math.PI*2);
+  chartCtx.arc(x, y, 3*window.devicePixelRatio, 0, Math.PI*2);
   chartCtx.fill();
-  chartCtx.font = `${10*devicePixelRatio}px Inter, Arial`;
+  chartCtx.font = `${10*window.devicePixelRatio}px Inter, Arial`;
   chartCtx.fillStyle = 'rgba(200,255,255,0.85)';
   chartCtx.textAlign = 'left';
-  chartCtx.fillText(targetMax.toFixed(3), padding, padding - 4*devicePixelRatio);
-  chartCtx.fillText(targetMin.toFixed(3), padding, padding + plotH + 12*devicePixelRatio);
+  chartCtx.fillText(targetMax.toFixed(3), padding, padding - 4*window.devicePixelRatio);
+  chartCtx.fillText(targetMin.toFixed(3), padding, padding + plotH + 12*window.devicePixelRatio);
 }
 
 /* PANEL PARTICLES */
@@ -505,8 +520,8 @@ function initPanelParticles() {
   panelParticlesCtx = panelParticlesCanvas.getContext('2d');
   function resize(){
     const parent = panelParticlesCanvas.parentElement;
-    panelParticlesCanvas.width = Math.max(360, parent.clientWidth) * devicePixelRatio;
-    panelParticlesCanvas.height = parent.clientHeight * devicePixelRatio;
+    panelParticlesCanvas.width = Math.max(360, parent.clientWidth) * window.devicePixelRatio;
+    panelParticlesCanvas.height = parent.clientHeight * window.devicePixelRatio;
     panelParticlesCanvas.style.width = parent.clientWidth + 'px';
     panelParticlesCanvas.style.height = parent.clientHeight + 'px';
   }
@@ -581,7 +596,7 @@ function drawPanelParticles() {
     if (p.y > h + 20) p.y = -20;
     ctx.beginPath();
     ctx.fillStyle = `rgba(79,195,247,${p.a})`;
-    ctx.arc(p.x, p.y, p.s*devicePixelRatio, 0, Math.PI*2);
+    ctx.arc(p.x, p.y, p.s*window.devicePixelRatio, 0, Math.PI*2);
     ctx.fill();
   }
   requestAnimationFrame(drawPanelParticles);
@@ -590,6 +605,7 @@ function drawPanelParticles() {
 /* UI BINDING */
 function bindUI() {
   const panel = document.getElementById('control-panel');
+  if (!panel) return;
   const toggleBtn = document.getElementById('toggle-panel-btn');
   const chev = document.getElementById('chev');
   toggleBtn.addEventListener('click', ()=>{
@@ -599,6 +615,7 @@ function bindUI() {
   function openPanel(){
     panel.classList.add('open');
     panel.setAttribute('aria-hidden','false');
+    panel.style.pointerEvents = 'auto';
     panelOpen = true;
     assemblePanelParticles();
     panel.addEventListener('mousemove', onPanelMouseMove);
@@ -607,33 +624,47 @@ function bindUI() {
   function closePanel(){
     panel.classList.remove('open');
     panel.setAttribute('aria-hidden','true');
+    panel.style.pointerEvents = 'none';
     panelOpen = false;
     dispersePanelParticles();
     panel.removeEventListener('mousemove', onPanelMouseMove);
     chev.style.transform = 'rotate(0deg)';
   }
   setTimeout(()=> openPanel(), 420);
-  document.getElementById('save-system-btn').addEventListener('click', saveCurrentSystem);
-  document.getElementById('open-systems-btn').addEventListener('click', openSystemsModal);
-  document.getElementById('clear-systems-btn').addEventListener('click', clearSavedSystems);
+  const saveBtn = document.getElementById('save-system-btn');
+  if (saveBtn) saveBtn.addEventListener('click', saveCurrentSystem);
+  const openSystemsBtn = document.getElementById('open-systems-btn');
+  if (openSystemsBtn) openSystemsBtn.addEventListener('click', openSystemsModal);
+  const clearSystemsBtn = document.getElementById('clear-systems-btn');
+  if (clearSystemsBtn) clearSystemsBtn.addEventListener('click', clearSavedSystems);
   const glowRange = document.getElementById('new-planet-glow');
-  glowRange.addEventListener('input', ()=> document.getElementById('new-glow-value').textContent = glowRange.value);
-  document.getElementById('add-planet-btn').addEventListener('click', (e)=> { e.preventDefault(); addPlanetFromForm(); });
-  document.getElementById('spawn-random-btn').addEventListener('click', spawnRandomPlanet);
-  document.getElementById('find-transits-btn').addEventListener('click', ()=> {
+  if (glowRange) glowRange.addEventListener('input', ()=> document.getElementById('new-glow-value').textContent = glowRange.value);
+  const addPlanetBtn = document.getElementById('add-planet-btn');
+  if (addPlanetBtn) addPlanetBtn.addEventListener('click', (e)=> { e.preventDefault(); addPlanetFromForm(); });
+  const findTransitsBtn = document.getElementById('find-transits-btn');
+  if (findTransitsBtn) findTransitsBtn.addEventListener('click', ()=> {
     const cand = detectTransit();
     if (cand) flashNotice(`Transit candidate: ${cand.planet.name}`);
     else flashNotice('No transit currently aligned');
   });
-  document.getElementById('open-analysis-modal').addEventListener('click', openAnalysisModal);
-  document.getElementById('close-analysis-modal').addEventListener('click', closeAnalysisModal);
-  document.getElementById('run-ml-analysis-btn').addEventListener('click', runMLAnalysis);
-  document.getElementById('visualize-analyzed-btn').addEventListener('click', visualizeAnalyzedSystem);
-  document.getElementById('close-systems-modal').addEventListener('click', closeSystemsModal);
-  document.getElementById('export-system-btn').addEventListener('click', exportCurrentSystemJSON);
-  document.getElementById('import-system-btn').addEventListener('click', importSystemPrompt);
-  document.getElementById('update-star-btn').addEventListener('click', updateStar);
-  document.getElementById('exit-focus-btn').addEventListener('click', exitFocus);
+  const openAnalysisBtn = document.getElementById('open-analysis-modal');
+  if (openAnalysisBtn) openAnalysisBtn.addEventListener('click', openAnalysisModal);
+  const closeAnalysisBtn = document.getElementById('close-analysis-modal');
+  if (closeAnalysisBtn) closeAnalysisBtn.addEventListener('click', closeAnalysisModal);
+  const runAnalysisBtn = document.getElementById('run-ml-analysis-btn');
+  if (runAnalysisBtn) runAnalysisBtn.addEventListener('click', runMLAnalysis);
+  const visualizeBtn = document.getElementById('visualize-analyzed-btn');
+  if (visualizeBtn) visualizeBtn.addEventListener('click', visualizeAnalyzedSystem);
+  const closeSystemsBtn = document.getElementById('close-systems-modal');
+  if (closeSystemsBtn) closeSystemsBtn.addEventListener('click', closeSystemsModal);
+  const exportBtn = document.getElementById('export-system-btn');
+  if (exportBtn) exportBtn.addEventListener('click', exportCurrentSystemJSON);
+  const importBtn = document.getElementById('import-system-btn');
+  if (importBtn) importBtn.addEventListener('click', importSystemPrompt);
+  const updateStarBtn = document.getElementById('update-star-btn');
+  if (updateStarBtn) updateStarBtn.addEventListener('click', updateStar);
+  const exitFocusBtn = document.getElementById('exit-focus-btn');
+  if (exitFocusBtn) exitFocusBtn.addEventListener('click', exitFocus);
 }
 
 function toggleSection(id) {
@@ -646,18 +677,23 @@ function toggleSection(id) {
 }
 
 function openAnalysisModal() {
-  document.getElementById('analysis-modal').style.display = 'flex';
-  document.getElementById('overlay').classList.add('show');
+  const modal = document.getElementById('analysis-modal');
+  if (modal) modal.style.display = 'flex';
+  const overlay = document.getElementById('overlay');
+  if (overlay) overlay.classList.add('show');
 }
 
 function closeAnalysisModal() {
-  document.getElementById('analysis-modal').style.display = 'none';
-  document.getElementById('overlay').classList.remove('show');
+  const modal = document.getElementById('analysis-modal');
+  if (modal) modal.style.display = 'none';
+  const overlay = document.getElementById('overlay');
+  if (overlay) overlay.classList.remove('show');
 }
 
 /* ML ANALYSIS WITH API */
 async function runMLAnalysis() {
   const btn = document.getElementById('run-ml-analysis-btn');
+  if (!btn) return;
   btn.disabled = true;
   btn.textContent = 'Analyzing...';
   
@@ -729,6 +765,7 @@ function displayMLResults(data) {
   const probs = data.probabilities;
   
   const content = document.getElementById('ml-prediction-content');
+  if (!content) return;
   content.innerHTML = `
     <div style="display:grid;grid-template-columns:1fr 2fr;gap:20px;">
       <div style="background:rgba(${pred.color === '#51cf66' ? '81,207,102' : pred.color === '#ffd93d' ? '255,217,61' : '255,107,107'},0.12);border-radius:12px;padding:20px;border:2px solid ${pred.color};text-align:center;">
@@ -771,21 +808,25 @@ function displayMLResults(data) {
     </div>
   `;
   
-  document.getElementById('ml-results').style.display = 'block';
+  const results = document.getElementById('ml-results');
+  if (results) results.style.display = 'block';
 }
 
 function drawProbabilityChart(probs) {
   const canvas = document.getElementById('prob-canvas');
+  if (!canvas) return;
   const ctx = canvas.getContext('2d');
   const rect = canvas.getBoundingClientRect();
-  canvas.width = rect.width * devicePixelRatio;
-  canvas.height = rect.height * devicePixelRatio;
+  canvas.width = rect.width * window.devicePixelRatio;
+  canvas.height = rect.height * window.devicePixelRatio;
+  canvas.style.width = rect.width + 'px';
+  canvas.style.height = rect.height + 'px';
   
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   
   const w = canvas.width;
   const h = canvas.height;
-  const padding = 40 * devicePixelRatio;
+  const padding = 40 * window.devicePixelRatio;
   const chartW = w - padding * 2;
   const chartH = h - padding * 2;
   
@@ -816,17 +857,17 @@ function drawProbabilityChart(probs) {
     ctx.fillRect(x, y, barWidth, barHeight);
     
     ctx.strokeStyle = item.color;
-    ctx.lineWidth = 2 * devicePixelRatio;
+    ctx.lineWidth = 2 * window.devicePixelRatio;
     ctx.strokeRect(x, y, barWidth, barHeight);
     
     ctx.fillStyle = '#ffffff';
-    ctx.font = `bold ${14 * devicePixelRatio}px Inter, Arial`;
+    ctx.font = `bold ${14 * window.devicePixelRatio}px Inter, Arial`;
     ctx.textAlign = 'center';
-    ctx.fillText(`${(item.value * 100).toFixed(1)}%`, x + barWidth / 2, y - 10 * devicePixelRatio);
+    ctx.fillText(`${(item.value * 100).toFixed(1)}%`, x + barWidth / 2, y - 10 * window.devicePixelRatio);
     
     ctx.fillStyle = '#cfefff';
-    ctx.font = `${11 * devicePixelRatio}px Inter, Arial`;
-    const labelY = padding + chartH + 20 * devicePixelRatio;
+    ctx.font = `${11 * window.devicePixelRatio}px Inter, Arial`;
+    const labelY = padding + chartH + 20 * window.devicePixelRatio;
     ctx.fillText(item.label, x + barWidth / 2, labelY);
   });
 }
@@ -842,12 +883,16 @@ function visualizeAnalyzedSystem() {
   for (const p of planetsData) {
     scene.remove(p.mesh);
     scene.remove(p.orbitLine);
+    p.mesh.geometry.dispose();
+    p.mesh.material.dispose();
+    p.orbitLine.geometry.dispose();
+    p.orbitLine.material.dispose();
   }
   planetsData = [];
   
   const starSize = data.stellar_radius;
   star.geometry.dispose();
-  star.geometry = new THREE.SphereBufferGeometry(starSize, 256, 256);
+  star.geometry = new THREE.SphereGeometry(starSize, 256, 256);
   star.userData.size = starSize;
   
   let c1, c2, c3;
@@ -881,7 +926,7 @@ function visualizeAnalyzedSystem() {
   const corona = scene.children.find(child => child.userData && child.userData.type === 'corona');
   if (corona) {
     corona.geometry.dispose();
-    corona.geometry = new THREE.SphereBufferGeometry(starSize * 1.2, 64, 64);
+    corona.geometry = new THREE.SphereGeometry(starSize * 1.2, 64, 64);
   }
   
   const predictionMap = {
@@ -928,7 +973,7 @@ function visualizeAnalyzedSystem() {
   flashNotice(`System visualized: ${predLabel}`);
 }
 
-/* SYSTEM PERSISTENCE (shortened for space) */
+/* SYSTEM PERSISTENCE */
 function saveCurrentSystem() {
   const name = (document.getElementById('system-name').value || 'Unnamed').trim();
   if (!name) { alert('Enter system name'); return; }
@@ -949,8 +994,10 @@ function saveCurrentSystem() {
 
 function loadSavedSystemsList() {
   const arr = JSON.parse(localStorage.getItem('exoplanetSystems') || '[]');
-  document.getElementById('saved-count').textContent = arr.length;
+  const savedCount = document.getElementById('saved-count');
+  if (savedCount) savedCount.textContent = arr.length;
   const container = document.getElementById('saved-systems-list');
+  if (!container) return;
   container.innerHTML = '';
   if (!arr.length) {
     container.innerHTML = '<div class="meta">No saved systems</div>';
@@ -983,25 +1030,30 @@ function loadSavedSystemsList() {
 }
 
 function openSystemsModal(){
-  document.getElementById('systems-modal').style.display = 'flex';
-  document.getElementById('overlay').classList.add('show');
+  const modal = document.getElementById('systems-modal');
+  if (modal) modal.style.display = 'flex';
+  const overlay = document.getElementById('overlay');
+  if (overlay) overlay.classList.add('show');
   populateSystemsModal();
 }
 
 function closeSystemsModal(){
-  document.getElementById('systems-modal').style.display = 'none';
-  document.getElementById('overlay').classList.remove('show');
+  const modal = document.getElementById('systems-modal');
+  if (modal) modal.style.display = 'none';
+  const overlay = document.getElementById('overlay');
+  if (overlay) overlay.classList.remove('show');
 }
 
 function populateSystemsModal(){
   const arr = JSON.parse(localStorage.getItem('exoplanetSystems') || '[]');
   const list = document.getElementById('systems-modal-list');
+  if (!list) return;
   list.innerHTML = '';
   if (!arr.length) { list.innerHTML = '<div class="meta">No saved systems</div>'; return; }
   arr.forEach((s, idx) => {
     const item = document.createElement('div');
     item.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px;background:rgba(255,255,255,0.02);border-radius:10px';
-    const meta =document.createElement('div');
+    const meta = document.createElement('div');
     meta.innerHTML = `<div style="font-weight:800;color:#dff7ff">${s.name}</div><div style="font-size:12px;color:#cfefff">${s.planets.length} planets • ${new Date(s.timestamp).toLocaleString()}</div>`;
     item.appendChild(meta);
     const actions = document.createElement('div');
@@ -1039,6 +1091,10 @@ function loadSystem(idx) {
   for (const p of planetsData) {
     scene.remove(p.mesh);
     scene.remove(p.orbitLine);
+    p.mesh.geometry.dispose();
+    p.mesh.material.dispose();
+    p.orbitLine.geometry.dispose();
+    p.orbitLine.material.dispose();
   }
   planetsData = [];
   sys.planets.forEach(pl => {
@@ -1055,7 +1111,8 @@ function exportCurrentSystemJSON() {
     timestamp: Date.now()
   };
   const blob = new Blob([JSON.stringify(sys, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);const a = document.createElement('a');
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
   a.href = url;
   a.download = name.replace(/\s+/g,'_') + '.json';
   a.click();
@@ -1078,10 +1135,15 @@ function importSystemPrompt() {
         for (const p of planetsData) {
           scene.remove(p.mesh);
           scene.remove(p.orbitLine);
+          p.mesh.geometry.dispose();
+          p.mesh.material.dispose();
+          p.orbitLine.geometry.dispose();
+          p.orbitLine.material.dispose();
         }
         planetsData = [];
         sys.planets.forEach(pl => createPlanet(pl.name, pl.size, pl.distance, pl.speed, pl.color, pl.glowIntensity, pl.materialType, pl.angle || 0));
-        document.getElementById('system-name').value = sys.name || 'Imported System';
+        const systemNameInput = document.getElementById('system-name');
+        if (systemNameInput) systemNameInput.value = sys.name || 'Imported System';
         flashNotice('Imported system');
         updateSystemListUI();
       } catch (err) {
@@ -1094,7 +1156,6 @@ function importSystemPrompt() {
 }
 
 /* 3D PREVIEW RENDERERS */
-let sharedPreviewRenderer;
 const previewRenderers = new Map();
 
 function createPlanetPreview(planetData) {
@@ -1111,7 +1172,7 @@ function createPlanetPreview(planetData) {
   const miniScene = new THREE.Scene();
   const miniCamera = new THREE.PerspectiveCamera(45, 110/64, 0.1, 100);
   miniCamera.position.set(0, 0, planetData.size * 3);
-  const geom = new THREE.SphereBufferGeometry(planetData.size, 32, 32);
+  const geom = new THREE.SphereGeometry(planetData.size, 32, 32);
   const mat = new THREE.ShaderMaterial({
     vertexShader: planetVertexShader,
     fragmentShader: planetFragmentShader,
@@ -1162,6 +1223,7 @@ function destroyPreview(id) {
 
 function updateSystemListUI() {
   const list = document.getElementById('system-planets-list');
+  if (!list) return;
   const oldRows = Array.from(list.children);
   oldRows.forEach(row => {
     const pid = row.dataset.previewId;
@@ -1191,7 +1253,7 @@ function updateSystemListUI() {
     editBtn.onclick = ()=> openPlanetEditor(idx);
     const focusBtn = document.createElement('button');
     focusBtn.className = 'btn';
-    focusBtn.style.cssText = 'background:linear-gradient(90deg,#8b5cf6,#06b6d4);padding:4px 8px;fontSize:11px';
+    focusBtn.style.cssText = 'background:linear-gradient(90deg,#8b5cf6,#06b6d4);padding:4px 8px;font-size:11px';
     focusBtn.textContent = 'Focus';
     focusBtn.onclick = ()=> focusPlanet(idx);
     actions.appendChild(editBtn);
@@ -1206,8 +1268,9 @@ function focusPlanet(idx) {
   if (!p) return;
   focusedObject = { type: 'planet', data: p, mesh: p.mesh };
   const panel = document.getElementById('focus-panel');
-  panel.classList.add('show');
+  if (panel) panel.classList.add('show');
   const info = document.getElementById('focus-info');
+  if (!info) return;
   info.innerHTML = `
     <div style="font-size:13px;color:#cfefff;">
       <div style="margin-bottom:8px;"><b style="color:#7fe0ff">${p.name}</b></div>
@@ -1224,12 +1287,13 @@ function focusPlanet(idx) {
       <button class="btn btn-danger" id="focus-delete-btn" style="width:100%">Delete Planet</button>
     </div>
   `;
-  document.getElementById('focus-save-btn').addEventListener('click', ()=> {
+  const saveBtn = document.getElementById('focus-save-btn');
+  if (saveBtn) saveBtn.addEventListener('click', () => {
     p.name = document.getElementById('focus-edit-name').value;
     p.size = parseFloat(document.getElementById('focus-edit-size').value);
     p.distance = parseFloat(document.getElementById('focus-edit-distance').value);
     p.mesh.geometry.dispose();
-    p.mesh.geometry = new THREE.SphereBufferGeometry(p.size, 96, 96);
+    p.mesh.geometry = new THREE.SphereGeometry(p.size, 128, 128);
     scene.remove(p.orbitLine);
     const points = [];
     for (let i=0;i<=360;i++){
@@ -1247,10 +1311,15 @@ function focusPlanet(idx) {
     flashNotice('Planet updated');
     info.querySelector('b').textContent = p.name;
   });
-  document.getElementById('focus-delete-btn').addEventListener('click', ()=> {
+  const deleteBtn = document.getElementById('focus-delete-btn');
+  if (deleteBtn) deleteBtn.addEventListener('click', () => {
     if (!confirm(`Delete planet ${p.name}?`)) return;
     scene.remove(p.mesh);
     scene.remove(p.orbitLine);
+    p.mesh.geometry.dispose();
+    p.mesh.material.dispose();
+    p.orbitLine.geometry.dispose();
+    p.orbitLine.material.dispose();
     const pidx = planetsData.findIndex(pl => pl.id === p.id);
     if (pidx >= 0) planetsData.splice(pidx, 1);
     exitFocus();
@@ -1263,8 +1332,9 @@ function focusPlanet(idx) {
 function focusStar() {
   focusedObject = { type: 'star', data: star.userData, mesh: star };
   const panel = document.getElementById('focus-panel');
-  panel.classList.add('show');
+  if (panel) panel.classList.add('show');
   const info = document.getElementById('focus-info');
+  if (!info) return;
   info.innerHTML = `
     <div style="font-size:13px;color:#cfefff;">
       <div style="margin-bottom:8px;"><b style="color:#7fe0ff">Central Star</b></div>
@@ -1280,13 +1350,14 @@ function focusStar() {
       <button class="btn btn-primary" id="focus-star-save" style="width:100%">Save Changes</button>
     </div>
   `;
-  document.getElementById('focus-star-save').addEventListener('click', () => {
+  const saveBtn = document.getElementById('focus-star-save');
+  if (saveBtn) saveBtn.addEventListener('click', () => {
     const newSize = parseFloat(document.getElementById('focus-star-size').value);
     const c1 = new THREE.Color(document.getElementById('focus-star-c1').value);
     const c2 = new THREE.Color(document.getElementById('focus-star-c2').value);
     const c3 = new THREE.Color(document.getElementById('focus-star-c3').value);
     star.geometry.dispose();
-    star.geometry = new THREE.SphereBufferGeometry(newSize, 256, 256);
+    star.geometry = new THREE.SphereGeometry(newSize, 256, 256);
     star.userData.size = newSize;
     star.material.uniforms.color1.value = c1;
     star.material.uniforms.color2.value = c2;
@@ -1295,17 +1366,17 @@ function focusStar() {
     const corona = scene.children.find(child => child.userData && child.userData.type === 'corona');
     if (corona) {
       corona.geometry.dispose();
-      corona.geometry = new THREE.SphereBufferGeometry(newSize * 1.2, 64, 64);
+      corona.geometry = new THREE.SphereGeometry(newSize * 1.2, 64, 64);
     }
     updateStarUniforms();
     flashNotice('Star updated');
     exitFocus();
   });
 }
-
 function exitFocus() {
   focusedObject = null;
-  document.getElementById('focus-panel').classList.remove('show');
+  const panel = document.getElementById('focus-panel');
+  if (panel) panel.classList.remove('show');
   const start = performance.now();
   const startPos = camera.position.clone();
   const startTarget = controls.target.clone();
@@ -1322,6 +1393,7 @@ function exitFocus() {
 
 function openPlanetEditor(idx) {
   const p = planetsData[idx];
+  if (!p) return;
   const editor = document.createElement('div');
   editor.style.cssText = 'background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));padding:12px;border-radius:10px;margin-top:8px';
   editor.innerHTML = `
@@ -1343,13 +1415,15 @@ function openPlanetEditor(idx) {
     </div>
   `;
   const list = document.getElementById('system-planets-list');
+  if (!list) return;
   const existing = document.getElementById('planet-editor-'+idx);
   if (existing) existing.remove();
   const wrapper = document.createElement('div');
   wrapper.id = 'planet-editor-'+idx;
   wrapper.appendChild(editor);
   list.insertBefore(wrapper, list.children[idx+1] || null);
-  document.getElementById(`editor-save-${idx}`).addEventListener('click', ()=>{
+  const saveBtn = document.getElementById(`editor-save-${idx}`);
+  if (saveBtn) saveBtn.addEventListener('click', ()=>{
     const newName = document.getElementById(`editor-name-${idx}`).value;
     const newSize = parseFloat(document.getElementById(`editor-size-${idx}`).value);
     const newDist = parseFloat(document.getElementById(`editor-dist-${idx}`).value);
@@ -1357,12 +1431,12 @@ function openPlanetEditor(idx) {
     const newColor = document.getElementById(`editor-color-${idx}`).value;
     const pd = planetsData[idx];
     pd.name = newName;
-    pd.size = newSize;
-    pd.distance = newDist;
-    pd.speed = newSpeed;
-    pd.color = parseInt(newColor.replace('#',''),16);
+    pd.size = newSize || pd.size;
+    pd.distance = newDist || pd.distance;
+    pd.speed = newSpeed || pd.speed;
+    pd.color = parseInt(newColor.replace('#',''),16) || pd.color;
     pd.mesh.geometry.dispose();
-    pd.mesh.geometry = new THREE.SphereBufferGeometry(pd.size, 96, 96);
+    pd.mesh.geometry = new THREE.SphereGeometry(pd.size, 128, 128);
     if (pd.mesh.material && pd.mesh.material.uniforms) {
       pd.mesh.material.uniforms.baseColor.value = new THREE.Color(pd.color);
     }
@@ -1372,6 +1446,8 @@ function openPlanetEditor(idx) {
       const a = (i/360)*Math.PI*2;
       pts.push(new THREE.Vector3(Math.cos(a)*pd.distance,0,Math.sin(a)*pd.distance));
     }
+    pd.orbitLine.geometry.dispose();
+    pd.orbitLine.material.dispose();
     pd.orbitLine = new THREE.Line(
       new THREE.BufferGeometry().setFromPoints(pts),
       new THREE.LineBasicMaterial({ color: pd.color, transparent:true, opacity:0.12, depthWrite:false })
@@ -1383,29 +1459,40 @@ function openPlanetEditor(idx) {
     flashNotice('Planet updated');
     wrapper.remove();
   });
-  document.getElementById(`editor-delete-${idx}`).addEventListener('click', ()=>{
+  const deleteBtn = document.getElementById(`editor-delete-${idx}`);
+  if (deleteBtn) deleteBtn.addEventListener('click', ()=>{
     if (!confirm('Delete this planet?')) return;
     const pd = planetsData[idx];
     scene.remove(pd.mesh);
     scene.remove(pd.orbitLine);
+    pd.mesh.geometry.dispose();
+    pd.mesh.material.dispose();
+    pd.orbitLine.geometry.dispose();
+    pd.orbitLine.material.dispose();
     planetsData.splice(idx,1);
     updateSystemListUI();
     updateStarUniforms();
     flashNotice('Planet deleted');
     wrapper.remove();
   });
-  document.getElementById(`editor-cancel-${idx}`).addEventListener('click', ()=>{
+  const cancelBtn = document.getElementById(`editor-cancel-${idx}`);
+  if (cancelBtn) cancelBtn.addEventListener('click', ()=>{
     wrapper.remove();
   });
 }
 
 function updateStar() {
-  const size = parseFloat(document.getElementById('star-size').value);
-  const c1 = new THREE.Color(document.getElementById('star-color1').value);
-  const c2 = new THREE.Color(document.getElementById('star-color2').value);
-  const c3 = new THREE.Color(document.getElementById('star-color3').value);
+  const starSizeInput = document.getElementById('star-size');
+  const color1Input = document.getElementById('star-color1');
+  const color2Input = document.getElementById('star-color2');
+  const color3Input = document.getElementById('star-color3');
+  if (!starSizeInput || !color1Input || !color2Input || !color3Input) return;
+  const size = parseFloat(starSizeInput.value) || 3.0;
+  const c1 = new THREE.Color(color1Input.value || '#FFF3A0');
+  const c2 = new THREE.Color(color2Input.value || '#FF9A3B');
+  const c3 = new THREE.Color(color3Input.value || '#FF3B1F');
   star.geometry.dispose();
-  star.geometry = new THREE.SphereBufferGeometry(size, 256, 256);
+  star.geometry = new THREE.SphereGeometry(size, 256, 256);
   star.userData.size = size;
   star.material.uniforms.color1.value = c1;
   star.material.uniforms.color2.value = c2;
@@ -1414,27 +1501,43 @@ function updateStar() {
   const corona = scene.children.find(child => child.userData && child.userData.type === 'corona');
   if (corona) {
     corona.geometry.dispose();
-    corona.geometry = new THREE.SphereBufferGeometry(size * 1.2, 64, 64);
+    corona.geometry = new THREE.SphereGeometry(size * 1.2, 64, 64);
   }
   updateStarUniforms();
   flashNotice('Star updated');
 }
 
 function addPlanetFromForm() {
-  const name = document.getElementById('new-planet-name').value || 'Planet';
-  const size = parseFloat(document.getElementById('new-planet-size').value) || 1;
-  const dist = parseFloat(document.getElementById('new-planet-distance').value) || 12;
-  const speed = parseFloat(document.getElementById('new-planet-speed').value) || 0.01;
-  const colorHex = document.getElementById('new-planet-color').value || '#4fc3f7';
+  const nameInput = document.getElementById('new-planet-name');
+  const sizeInput = document.getElementById('new-planet-size');
+  const distanceInput = document.getElementById('new-planet-distance');
+  const speedInput = document.getElementById('new-planet-speed');
+  const colorInput = document.getElementById('new-planet-color');
+  const glowInput = document.getElementById('new-planet-glow');
+  const materialSelect = document.getElementById('new-material');
+  if (!nameInput || !sizeInput || !distanceInput || !speedInput || !colorInput || !glowInput || !materialSelect) return;
+  const name = nameInput.value || 'Planet';
+  const size = parseFloat(sizeInput.value) || 1;
+  const dist = parseFloat(distanceInput.value) || 12;
+  const speed = parseFloat(speedInput.value) || 0.01;
+  const colorHex = colorInput.value || '#4fc3f7';
   const color = parseInt(colorHex.replace('#',''),16);
-  const glow = parseFloat(document.getElementById('new-planet-glow').value) || 0.2;
-  const materialType = document.getElementById('new-material').value || 'earth';
+  const glow = parseFloat(glowInput.value) || 0.2;
+  const materialType = materialSelect.value || 'earth';
+  if (planetsData.length >= MAX_PLANETS) {
+    flashNotice('Maximum planets reached');
+    return;
+  }
   createPlanet(name, size, dist, speed, color, glow, materialType, Math.random()*Math.PI*2);
   flashNotice(`Planet added: ${name}`);
   updateSystemListUI();
 }
 
 function spawnRandomPlanet() {
+  if (planetsData.length >= MAX_PLANETS) {
+    flashNotice('Maximum planets reached');
+    return;
+  }
   const name = 'Rnd-' + Math.floor(Math.random()*999);
   const size = (Math.random()*1.8) + 0.5;
   const dist = 6 + Math.random()*60;
@@ -1448,23 +1551,28 @@ function spawnRandomPlanet() {
 }
 
 function onMouseMove(e) {
-  mouse.x = (e.clientX / innerWidth)*2 - 1;
-  mouse.y = -(e.clientY / innerHeight)*2 + 1;
+  mouse.x = (e.clientX / window.innerWidth)*2 - 1;
+  mouse.y = -(e.clientY / window.innerHeight)*2 + 1;
   raycaster.setFromCamera(mouse, camera);
   const objects = [star, ...planetsData.map(p=>p.mesh)];
   const hits = raycaster.intersectObjects(objects, false);
   const tt = document.getElementById('tooltip');
+  if (!tt) return;
   if (hits.length) {
     const obj = hits[0].object;
     const ud = obj.userData || {};
     tt.style.display = 'block';
     tt.style.left = (e.clientX + 14) + 'px';
     tt.style.top = (e.clientY + 14) + 'px';
-    document.getElementById('tooltip-name').textContent = ud.name || 'Object';
-    if (ud.type === 'star') {
-      document.getElementById('tooltip-sub').textContent = `Radius: ${(ud.size||3).toFixed(2)}`;
-    } else {
-      document.getElementById('tooltip-sub').textContent = `Size: ${(ud.size||1).toFixed(2)} • Dist: ${(ud.distance||0).toFixed(2)}`;
+    const nameEl = document.getElementById('tooltip-name');
+    if (nameEl) nameEl.textContent = ud.name || 'Object';
+    const subEl = document.getElementById('tooltip-sub');
+    if (subEl) {
+      if (ud.type === 'star') {
+        subEl.textContent = `Radius: ${(ud.size||3).toFixed(2)}`;
+      } else {
+        subEl.textContent = `Size: ${(ud.size||1).toFixed(2)} • Dist: ${(ud.distance||0).toFixed(2)}`;
+      }
     }
     planetsData.forEach(p => {
       if (p.mesh === obj) p.orbitLine.material.opacity = 0.55;
@@ -1477,8 +1585,8 @@ function onMouseMove(e) {
 }
 
 function onClick(e) {
-  mouse.x = (e.clientX / innerWidth)*2 - 1;
-  mouse.y = -(e.clientY / innerHeight)*2 + 1;
+  mouse.x = (e.clientX / window.innerWidth)*2 - 1;
+  mouse.y = -(e.clientY / window.innerHeight)*2 + 1;
   raycaster.setFromCamera(mouse, camera);
   const objects = [star, ...planetsData.map(p=>p.mesh)];
   const hits = raycaster.intersectObjects(objects, false);
@@ -1538,24 +1646,30 @@ function animate() {
   const lerped = prev + (brightness - prev) * 0.18;
   brightnessHistory.push(lerped);
   const lc = document.getElementById('light-curve');
-  if (cand) {
-    if (!transitActive) {
-      transitActive = true;
-      transitingPlanet = cand.planet;
-      document.getElementById('lc-planet').textContent = transitingPlanet.name;
-      document.getElementById('lc-depth').textContent = (Math.pow(transitingPlanet.size / star.userData.size, 2) * 100).toFixed(2) + '%';
-      animationSpeed = 0.24;
-      lc.classList.add('show');
+  if (lc) {
+    if (cand) {
+      if (!transitActive) {
+        transitActive = true;
+        transitingPlanet = cand.planet;
+        const planetEl = document.getElementById('lc-planet');
+        if (planetEl) planetEl.textContent = transitingPlanet.name;
+        const depthEl = document.getElementById('lc-depth');
+        if (depthEl) depthEl.textContent = (Math.pow(transitingPlanet.size / star.userData.size, 2) * 100).toFixed(2) + '%';
+        animationSpeed = 0.24;
+        lc.classList.add('show');
+      } else {
+        const planetEl = document.getElementById('lc-planet');
+        if (planetEl) planetEl.textContent = cand.planet.name;
+        const depthEl = document.getElementById('lc-depth');
+        if (depthEl) depthEl.textContent = (Math.pow(cand.planet.size / star.userData.size, 2) * 100).toFixed(2) + '%';
+      }
     } else {
-      document.getElementById('lc-planet').textContent = cand.planet.name;
-      document.getElementById('lc-depth').textContent = (Math.pow(cand.planet.size / star.userData.size, 2) * 100).toFixed(2) + '%';
-    }
-  } else {
-    if (transitActive) {
-      transitActive = false;
-      transitingPlanet = null;
-      animationSpeed = 1.0;
-      lc.classList.remove('show');
+      if (transitActive) {
+        transitActive = false;
+        transitingPlanet = null;
+        animationSpeed = 1.0;
+        lc.classList.remove('show');
+      }
     }
   }
   drawChart();
@@ -1574,22 +1688,22 @@ function flashNotice(text, ttl=1800) {
 }
 
 function onWindowResize() {
-  camera.aspect = innerWidth / innerHeight;
+  camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
-  composer.setSize(innerWidth, innerHeight);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  composer.setSize(window.innerWidth, window.innerHeight);
   if (chartCanvas) {
     const rect = document.getElementById('light-curve').getBoundingClientRect();
-    chartCanvas.width = Math.floor(Math.min(420, rect.width * 0.68) * devicePixelRatio);
-    chartCanvas.height = Math.floor(140 * devicePixelRatio);
+    chartCanvas.width = Math.floor(Math.min(420, rect.width * 0.68) * window.devicePixelRatio);
+    chartCanvas.height = Math.floor(140 * window.devicePixelRatio);
   }
   const pc = document.getElementById('panel-particles');
   if (pc) {
     const parent = pc.parentElement;
     pc.style.width = parent.clientWidth + 'px';
     pc.style.height = parent.clientHeight + 'px';
-    pc.width = parent.clientWidth * devicePixelRatio;
-    pc.height = parent.clientHeight * devicePixelRatio;
+    pc.width = parent.clientWidth * window.devicePixelRatio;
+    pc.height = parent.clientHeight * window.devicePixelRatio;
   }
 }
 
