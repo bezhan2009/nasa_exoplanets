@@ -17,16 +17,25 @@ COPY . .
 RUN npm run build
 
 # Финальный образ для продакшн
-FROM nginx:alpine
+FROM node:18-alpine
+
+# Установка рабочей директории
+WORKDIR /app
+
+# Копирование package.json
+COPY package*.json ./
+
+# Установка только production зависимостей
+RUN npm ci --only=production
 
 # Копирование собранных файлов из предыдущего этапа
-COPY --from=builder /app/build /usr/share/nginx/html
+COPY --from=builder /app/build ./build
 
-# Копирование кастомной конфигурации Nginx (опционально)
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# Установка serve для раздачи статических файлов
+RUN npm install -g serve
 
 # Открытие порта
-EXPOSE 80
+EXPOSE 3000
 
-# Запуск Nginx
-CMD ["nginx", "-g", "daemon off;"]
+# Запуск приложения через serve
+CMD ["serve", "-s", "build", "-l", "3000"]
