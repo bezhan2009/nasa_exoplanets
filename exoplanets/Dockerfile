@@ -35,7 +35,7 @@ COPY --from=builder /app/build ./build
 RUN npm install -g serve
 
 # Открытие порта
-EXPOSE 3000
+EXPOSE 80
 
 # Запуск приложения через serve
-CMD ["serve", "-s", "build", "-l", "3000"]
+CMD ["serve", "-s", "build", "-l", "80"]
