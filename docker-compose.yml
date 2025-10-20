@@ -23,7 +23,7 @@ services:
     restart: always
     environment:  # Updated for IP-based access (no domain)
       - VIRTUAL_HOST=212.67.9.175  # Matches the Host header for IP access
-      - VIRTUAL_PORT=80
+      - VIRTUAL_PORT=3000
       # Remove LETSENCRYPT_HOST and LETSENCRYPT_EMAIL since no domain/HTTPS
     networks:
       - proxy-network
