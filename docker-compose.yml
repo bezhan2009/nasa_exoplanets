@@ -17,21 +17,14 @@ services:
     build:
       context: ./exoplanets
     container_name: exoplanet-frontend
-    # Still remove this to avoid host port conflict:
-    # ports:
-    #   - "80:80"
+    ports:
+      - "80:3000"
     depends_on:
       - backend
     restart: always
-    labels:
-      - "VIRTUAL_HOST=212.67.9.175"
-      - "VIRTUAL_PORT=3000"
-    environment:  # Updated for IP-based access (no domain)
-      - VIRTUAL_HOST=212.67.9.175  # Matches the Host header for IP access
-      - VIRTUAL_PORT=3000
-      # Remove LETSENCRYPT_HOST and LETSENCRYPT_EMAIL since no domain/HTTPS
     networks:
       - proxy-network
+
 
 networks:
   proxy-network:
