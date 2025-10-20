@@ -17,20 +17,18 @@ services:
     build:
       context: ./exoplanets
     container_name: exoplanet-frontend
-    # Still remove this to avoid host port conflict:
-    # ports:
-    #   - "80:80"
     depends_on:
       - backend
     restart: always
-    environment:  # Updated for IP-based access (no domain)
-      - VIRTUAL_HOST=212.67.9.175  # Matches the Host header for IP access
+    environment:
+      - VIRTUAL_HOST=212.67.9.175
       - VIRTUAL_PORT=80
-      # Remove LETSENCRYPT_HOST and LETSENCRYPT_EMAIL since no domain/HTTPS
     networks:
       - proxy-network
+    # ⛔ ports тут НЕ НУЖЕН, иначе конфликт с nginx-proxy
+    # ⛔ letsencrypt тоже не нужен, так как нет домена
 
 networks:
   proxy-network:
-    external:
-      name: proxy_proxy-network  # Replace with the actual name from 'docker network ls'
+    external: true
+
